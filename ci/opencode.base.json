@@ -1,0 +1,18 @@
+{
+  "provider": {
+    "aistation": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "AI Station",
+      "options": {
+        "baseURL": "__BASE_URL__",
+        "apiKey": "__API_KEY__"
+      },
+      "models": {
+        "__MODEL__": {
+          "name": "__MODEL__"
+        }
+      }
+    }
+  },
+  "model": "aistation/__MODEL__"
+}

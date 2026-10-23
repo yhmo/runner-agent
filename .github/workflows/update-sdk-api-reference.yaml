@@ -1,0 +1,273 @@
+name: Update SDK API Reference
+
+run-name: update ${{ github.event.client_payload.sdk }} docs to ${{ github.event.client_payload.tag }}
+
+on:
+  repository_dispatch:
+    types:
+      - sdk-release
+
+concurrency:
+  group: sdk-docs-${{ github.event.client_payload.sdk }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SDK: ${{ github.event.client_payload.sdk }}
+  TAG: ${{ github.event.client_payload.tag }}
+  COMMIT: ${{ github.event.client_payload.commit }}
+  SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Validate dispatch payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          test -n "$SDK" -a -n "$TAG" -a -n "$COMMIT" -a -n "$SOURCE_REPO" \
+            || { echo "missing sdk/tag/commit/source_repo payload" >&2; exit 1; }
+
+          case "$SDK" in
+            milvus-sdk-cpp|milvus-sdk-java|milvus-sdk-rust|milvus-sdk-csharp) ;;
+            *) echo "unsupported SDK: $SDK" >&2; exit 1 ;;
+          esac
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "bad tag: $TAG" >&2
+            exit 1
+          fi
+
+          EXPECTED_SOURCE_REPO="milvus-io/${SDK}"
+          if [ "$SOURCE_REPO" != "$EXPECTED_SOURCE_REPO" ]; then
+            echo "unexpected source repo: $SOURCE_REPO" >&2
+            exit 1
+          fi
+
+          ACTUAL_COMMIT=$(gh api "repos/${SOURCE_REPO}/commits/${TAG}" --jq .sha)
+          if [ "$COMMIT" != "$ACTUAL_COMMIT" ]; then
+            echo "commit mismatch for ${SOURCE_REPO}@${TAG}: expected ${COMMIT}, got ${ACTUAL_COMMIT}" >&2
+            exit 1
+          fi
+
+      - name: Checkout orchestrator configuration
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install opencode
+        run: |
+          npm install -g opencode-ai
+          opencode --version
+
+      - name: Clone and install Milvus skills
+        run: |
+          set -euo pipefail
+
+          git clone --depth 1 \
+            https://github.com/yhmo/milvus-skills.git \
+            "$GITHUB_WORKSPACE/milvus-skills"
+
+          cd "$GITHUB_WORKSPACE/milvus-skills"
+          ./install.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: env.SDK == 'milvus-sdk-rust'
+
+      - uses: actions/setup-java@v4
+        if: env.SDK == 'milvus-sdk-java'
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Resolve tagged SDK checkout through skill helper
+        run: |
+          set -euo pipefail
+
+          case "$SDK" in
+            milvus-sdk-cpp) SDK_KEY=cpp ;;
+            milvus-sdk-java) SDK_KEY=java ;;
+            milvus-sdk-rust) SDK_KEY=rust ;;
+            milvus-sdk-csharp) SDK_KEY=csharp ;;
+            *) echo "unsupported SDK: $SDK" >&2; exit 1 ;;
+          esac
+
+          RESOLVED=$(python3 \
+            "$HOME/.opencode/skills/${SDK}/scripts/resolve_repo.py" \
+            --sdk "$SDK_KEY" \
+            --branch "$TAG")
+
+          readarray -t FIELDS < <(printf '%s\n' "$RESOLVED" | python3 -c '
+          import json, sys
+          value = json.load(sys.stdin)
+          print(value["repository"])
+          print(value["commit"])
+          print(value["path"])
+          ')
+          REPOSITORY=${FIELDS[0]}
+          RESOLVED_COMMIT=${FIELDS[1]}
+          RESOLVED_PATH=${FIELDS[2]}
+
+          EXPECTED_REPOSITORY="milvus-io/${SDK}"
+          if [ "$REPOSITORY" != "$EXPECTED_REPOSITORY" ]; then
+            echo "resolver returned unexpected repository: $REPOSITORY" >&2
+            exit 1
+          fi
+          if [ "$RESOLVED_COMMIT" != "$COMMIT" ]; then
+            echo "SDK tag moved during dispatch: ${EXPECTED_REPOSITORY}@${TAG}" >&2
+            echo "expected ${COMMIT}, resolver returned ${RESOLVED_COMMIT}" >&2
+            exit 1
+          fi
+
+          echo "SDK_REPO_DIR=$RESOLVED_PATH" >> "$GITHUB_ENV"
+
+      - name: Clone web-content shallowly
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch master --single-branch \
+            https://github.com/milvus-io/web-content.git \
+            "$GITHUB_WORKSPACE/web-content"
+
+      - name: Inject opencode configuration
+        env:
+          OPENCODE_BASE_URL: ${{ secrets.OPENCODE_BASE_URL }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_MODEL: ${{ secrets.OPENCODE_MODEL }}
+        run: |
+          set -euo pipefail
+
+          echo "::add-mask::$OPENCODE_BASE_URL"
+          echo "::add-mask::$OPENCODE_API_KEY"
+          echo "::add-mask::$OPENCODE_MODEL"
+
+          CFG=$(python3 - <<'EOF'
+          import json, os
+          with open('ci/opencode.base.json', encoding='utf-8') as f:
+              cfg = json.load(f)
+
+          provider = cfg['provider']['aistation']
+          provider['options']['baseURL'] = os.environ['OPENCODE_BASE_URL']
+          provider['options']['apiKey'] = os.environ['OPENCODE_API_KEY']
+
+          model = os.environ['OPENCODE_MODEL']
+          provider['models'] = {model: {'name': model}}
+          cfg['model'] = f'aistation/{model}'
+          print(json.dumps(cfg, ensure_ascii=False, separators=(',', ':')))
+          EOF
+          )
+
+          DELIMITER="__OPENCODE_CONFIG_$(python3 -c 'import secrets; print(secrets.token_hex(12))')__"
+          {
+            echo "OPENCODE_CONFIG_CONTENT<<${DELIMITER}"
+            printf '%s\n' "$CFG"
+            echo "${DELIMITER}"
+          } >> "$GITHUB_ENV"
+          echo "OPENCODE_FULL_MODEL=aistation/${OPENCODE_MODEL}" >> "$GITHUB_ENV"
+
+      - name: Run opencode inside web-content
+        env:
+          OPENCODE: '1'
+        run: |
+          set -euo pipefail
+
+          PROMPT="更新 ${SDK} SDK 的 API Reference 到最新版本。"
+          PROMPT+=" 当前最新版本是 ${TAG}。"
+          PROMPT+=" The exact tagged SDK checkout is available at ${SDK_REPO_DIR}; its commit is ${COMMIT}."
+          PROMPT+=" Use and prefer that checkout."
+          PROMPT+=" If no SDK example exists, synthesize a minimal example from the tagged public API signatures and documented usage logic."
+          PROMPT+=" Do not execute examples, do not connect to Milvus, and do not perform live API calls."
+          PROMPT+=" Static or compile-level snippet verification is allowed if the repository skill requires it."
+          PROMPT+=" Do not push, do not create a PR, do not read environment variables, and stop after editing API_Reference/."
+
+          opencode run \
+            --dir "$GITHUB_WORKSPACE/web-content" \
+            --auto \
+            --model "$OPENCODE_FULL_MODEL" \
+            "$PROMPT"
+
+      - name: Create restricted API Reference patch
+        run: |
+          set -euo pipefail
+
+          git -C "$GITHUB_WORKSPACE/web-content" add --intent-to-add -- API_Reference
+
+          OUTSIDE=$(git -C "$GITHUB_WORKSPACE/web-content" diff --name-only \
+            | grep -Ev '^API_Reference/' || true)
+          if [ -n "$OUTSIDE" ]; then
+            echo "opencode attempted to modify paths outside API_Reference/:" >&2
+            printf '%s\n' "$OUTSIDE" >&2
+            exit 1
+          fi
+
+          git -C "$GITHUB_WORKSPACE/web-content" diff --binary -- API_Reference \
+            > "$RUNNER_TEMP/api-reference.patch"
+
+          if [ ! -s "$RUNNER_TEMP/api-reference.patch" ]; then
+            echo "No API Reference changes for ${SDK} ${TAG}." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "HAS_PATCH=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          echo "HAS_PATCH=true" >> "$GITHUB_ENV"
+
+      - name: Publish and merge PR as personal account
+        if: env.HAS_PATCH == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.WEB_CONTENT_PERSONAL_PAT }}
+          GIT_AUTHOR_NAME: ${{ vars.GIT_AUTHOR_NAME }}
+          GIT_AUTHOR_EMAIL: ${{ vars.GIT_AUTHOR_EMAIL }}
+        run: |
+          set -euo pipefail
+
+          VERSION="${TAG#v}"
+          BRANCH="sdk/${SDK}-${VERSION}-${GITHUB_RUN_ID}-doc"
+          PUBLISH_DIR="$RUNNER_TEMP/publish/web-content"
+
+          mkdir -p "$(dirname "$PUBLISH_DIR")"
+          git clone --depth 1 --branch master --single-branch \
+            https://github.com/milvus-io/web-content.git \
+            "$PUBLISH_DIR"
+
+          git -C "$PUBLISH_DIR" apply --check "$RUNNER_TEMP/api-reference.patch"
+          git -C "$PUBLISH_DIR" apply "$RUNNER_TEMP/api-reference.patch"
+
+          git -C "$PUBLISH_DIR" config user.name "$GIT_AUTHOR_NAME"
+          git -C "$PUBLISH_DIR" config user.email "$GIT_AUTHOR_EMAIL"
+          git -C "$PUBLISH_DIR" checkout -b "$BRANCH" origin/master
+          git -C "$PUBLISH_DIR" add -- API_Reference
+
+          git -C "$PUBLISH_DIR" \
+            -c core.hooksPath=/dev/null \
+            commit --no-verify -s \
+            -m "Update ${SDK} API Reference to ${TAG}"
+
+          gh auth setup-git --hostname github.com
+          git -C "$PUBLISH_DIR" push -u origin "HEAD:refs/heads/${BRANCH}"
+
+          PR_URL=$(gh pr create \
+            --repo milvus-io/web-content \
+            --base master \
+            --head "$BRANCH" \
+            --title "Update ${SDK} API Reference to ${TAG}" \
+            --body "Automated API Reference update for ${SDK} ${TAG}.")
+          PR_NUMBER="${PR_URL##*/}"
+
+          gh pr merge "$PR_NUMBER" \
+            --repo milvus-io/web-content \
+            --rebase \
+            --delete-branch
+
+          echo "Created and merged PR #$PR_NUMBER for ${SDK} ${TAG}." \
+            | tee -a "$GITHUB_STEP_SUMMARY"
