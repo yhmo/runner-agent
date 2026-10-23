@@ -45,7 +45,7 @@ jobs:
             exit 1
           fi
 
-          gh api repos/<RUNNER_AGENT_OWNER>/runner-agent/dispatches \
+          gh api repos/yhmo/runner-agent/dispatches \
             --method POST \
             --field event_type=sdk-release \
             --field "client_payload[sdk]=<SDK_NAME>" \

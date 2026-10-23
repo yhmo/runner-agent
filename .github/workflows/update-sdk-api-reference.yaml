@@ -203,7 +203,7 @@ jobs:
 
           git -C "$GITHUB_WORKSPACE/web-content" add --intent-to-add -- API_Reference
 
-          OUTSIDE=$(git -C "$GITHUB_WORKSPACE/web-content" diff --name-only \
+          OUTSIDE=$(git -C "$GITHUB_WORKSPACE/web-content" diff --name-only HEAD \
             | grep -Ev '^API_Reference/' || true)
           if [ -n "$OUTSIDE" ]; then
             echo "opencode attempted to modify paths outside API_Reference/:" >&2
@@ -211,7 +211,7 @@ jobs:
             exit 1
           fi
 
-          git -C "$GITHUB_WORKSPACE/web-content" diff --binary -- API_Reference \
+          git -C "$GITHUB_WORKSPACE/web-content" diff --binary HEAD -- API_Reference \
             > "$RUNNER_TEMP/api-reference.patch"
 
           if [ ! -s "$RUNNER_TEMP/api-reference.patch" ]; then

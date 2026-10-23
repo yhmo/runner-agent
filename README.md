@@ -39,7 +39,7 @@ SDK repositories need a separate `PRIVATE_DISPATCH_TOKEN` capable of calling `re
 ## Manual test
 
 ```bash
-gh api repos/<owner>/runner-agent/dispatches \
+gh api repos/yhmo/runner-agent/dispatches \
   --method POST \
   --field event_type=sdk-release \
   --field 'client_payload[sdk]=milvus-sdk-java' \
