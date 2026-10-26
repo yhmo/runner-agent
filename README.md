@@ -29,6 +29,12 @@ Configure these Actions variables:
 - `GIT_AUTHOR_NAME`
 - `GIT_AUTHOR_EMAIL`
 
+Configure Actions permissions under **Settings → Actions → General**:
+
+- Allow GitHub-created actions
+- Allow the specified action `dtolnay/rust-toolchain@stable`
+- Keep the default workflow token permission read-only
+
 `WEB_CONTENT_PERSONAL_PAT` must belong to the personal GitHub account and have access to `milvus-io/web-content`. A fine-grained PAT should grant:
 
 - Contents: read and write
@@ -41,13 +47,23 @@ SDK repositories need a separate `PRIVATE_DISPATCH_TOKEN` capable of calling `re
 ## Manual test
 
 ```bash
+SDK=milvus-sdk-java
+TAG=v3.0.11
+COMMIT=$(gh api "repos/milvus-io/${SDK}/commits/${TAG}" --jq .sha)
+
 gh api repos/yhmo/runner-agent/dispatches \
   --method POST \
-  --field event_type=sdk-release \
-  --field 'client_payload[sdk]=milvus-sdk-java' \
-  --field 'client_payload[tag]=v3.0.9' \
-  --field 'client_payload[commit]=<full-commit-sha>' \
-  --field 'client_payload[source_repo]=milvus-io/milvus-sdk-java'
+  --input - <<EOF
+{
+  "event_type": "sdk-release",
+  "client_payload": {
+    "sdk": "${SDK}",
+    "tag": "${TAG}",
+    "commit": "${COMMIT}",
+    "source_repo": "milvus-io/${SDK}"
+  }
+}
+EOF
 ```
 
 ## Security notes
