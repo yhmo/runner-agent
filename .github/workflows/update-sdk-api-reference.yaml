@@ -1,22 +1,42 @@
 name: Update SDK API Reference
 
-run-name: update ${{ github.event.client_payload.sdk }} docs to ${{ github.event.client_payload.tag }}
+run-name: update ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk || github.event.client_payload.sdk }} docs to ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.event.client_payload.tag }}
 
 on:
   repository_dispatch:
     types:
       - sdk-release
+  workflow_dispatch:
+    inputs:
+      sdk:
+        description: Target Milvus SDK
+        required: true
+        type: choice
+        default: java
+        options:
+          - pymilvus
+          - java
+          - go
+          - cpp
+          - rust
+          - csharp
+          - node
+      tag:
+        description: Exact release tag, or latest to resolve the latest stable SDK tag
+        required: true
+        type: string
+        default: latest
 
 concurrency:
-  group: sdk-docs-${{ github.event.client_payload.sdk }}
+  group: sdk-docs-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk || github.event.client_payload.sdk }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 env:
-  SDK: ${{ github.event.client_payload.sdk }}
-  TAG: ${{ github.event.client_payload.tag }}
+  SDK: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk || github.event.client_payload.sdk }}
+  TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.event.client_payload.tag }}
   COMMIT: ${{ github.event.client_payload.commit }}
   SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
 
@@ -32,30 +52,115 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -n "$SDK" -a -n "$TAG" -a -n "$COMMIT" -a -n "$SOURCE_REPO" \
-            || { echo "missing sdk/tag/commit/source_repo payload" >&2; exit 1; }
+          test -n "$SDK" -a -n "$TAG" \
+            || { echo "missing sdk/tag input" >&2; exit 1; }
 
           case "$SDK" in
-            milvus-sdk-cpp|milvus-sdk-java|milvus-sdk-rust|milvus-sdk-csharp) ;;
+            pymilvus|milvus-sdk-python)
+              SDK_KEY=pymilvus
+              SDK_LABEL=pymilvus
+              EXPECTED_SOURCE_REPO=milvus-io/pymilvus
+              SKILL_NAME=pymilvus
+              ;;
+            java|milvus-sdk-java)
+              SDK_KEY=java
+              SDK_LABEL=milvus-sdk-java
+              EXPECTED_SOURCE_REPO=milvus-io/milvus-sdk-java
+              SKILL_NAME=milvus-sdk-java
+              ;;
+            go|milvus-sdk-go)
+              SDK_KEY=go
+              SDK_LABEL=milvus-sdk-go
+              EXPECTED_SOURCE_REPO=milvus-io/milvus
+              SKILL_NAME=milvus-sdk-go
+              ;;
+            cpp|milvus-sdk-cpp)
+              SDK_KEY=cpp
+              SDK_LABEL=milvus-sdk-cpp
+              EXPECTED_SOURCE_REPO=milvus-io/milvus-sdk-cpp
+              SKILL_NAME=milvus-sdk-cpp
+              ;;
+            rust|milvus-sdk-rust)
+              SDK_KEY=rust
+              SDK_LABEL=milvus-sdk-rust
+              EXPECTED_SOURCE_REPO=milvus-io/milvus-sdk-rust
+              SKILL_NAME=milvus-sdk-rust
+              ;;
+            csharp|milvus-sdk-csharp)
+              SDK_KEY=csharp
+              SDK_LABEL=milvus-sdk-csharp
+              EXPECTED_SOURCE_REPO=milvus-io/milvus-sdk-csharp
+              SKILL_NAME=milvus-sdk-csharp
+              ;;
+            node|milvus-sdk-node)
+              SDK_KEY=node
+              SDK_LABEL=milvus-sdk-node
+              EXPECTED_SOURCE_REPO=milvus-io/milvus-sdk-node
+              SKILL_NAME=milvus-sdk-node
+              ;;
             *) echo "unsupported SDK: $SDK" >&2; exit 1 ;;
           esac
 
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
-            echo "bad tag: $TAG" >&2
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "$TAG" = "latest" ]; then
+            LATEST_TAG=$(git ls-remote --tags "https://github.com/${EXPECTED_SOURCE_REPO}.git" \
+              | SDK_KEY="$SDK_KEY" python3 -c '
+                import os, re, sys
+
+                sdk = os.environ["SDK_KEY"]
+                if sdk == "go":
+                    pattern = re.compile(r"^client/v(\d+)\.(\d+)\.(\d+)$")
+                else:
+                    pattern = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
+                tags = []
+                for line in sys.stdin:
+                    ref = line.rstrip("\n").split("\t", 1)[1]
+                    if ref.endswith("^{}"):
+                        continue
+                    tag = ref.removeprefix("refs/tags/")
+                    match = pattern.match(tag)
+                    if match:
+                        tags.append((tuple(map(int, match.groups())), tag))
+                if not tags:
+                    raise SystemExit("no stable release tag found")
+                print(max(tags)[1])
+              ')
+            TAG="$LATEST_TAG"
+            echo "Resolved latest ${SDK_LABEL} tag to ${TAG}."
+          fi
+
+          if [ "$SDK_KEY" = "go" ]; then
+            TAG_PATTERN='^(client/)?v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+          else
+            TAG_PATTERN='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+          fi
+          if [[ ! "$TAG" =~ $TAG_PATTERN ]]; then
+            echo "bad tag for ${SDK_LABEL}: $TAG" >&2
             exit 1
           fi
 
-          EXPECTED_SOURCE_REPO="milvus-io/${SDK}"
-          if [ "$SOURCE_REPO" != "$EXPECTED_SOURCE_REPO" ]; then
+          if [ -n "$SOURCE_REPO" ] && [ "$SOURCE_REPO" != "$EXPECTED_SOURCE_REPO" ]; then
             echo "unexpected source repo: $SOURCE_REPO" >&2
             exit 1
           fi
 
-          ACTUAL_COMMIT=$(gh api "repos/${SOURCE_REPO}/commits/${TAG}" --jq .sha)
-          if [ "$COMMIT" != "$ACTUAL_COMMIT" ]; then
-            echo "commit mismatch for ${SOURCE_REPO}@${TAG}: expected ${COMMIT}, got ${ACTUAL_COMMIT}" >&2
+          ACTUAL_COMMIT=$(gh api "repos/${EXPECTED_SOURCE_REPO}/commits/${TAG}" --jq .sha)
+          if [ -n "$COMMIT" ] && [ "$COMMIT" != "$ACTUAL_COMMIT" ]; then
+            echo "commit mismatch for ${EXPECTED_SOURCE_REPO}@${TAG}: expected ${COMMIT}, got ${ACTUAL_COMMIT}" >&2
             exit 1
           fi
+
+          {
+            echo "SDK=$SDK_KEY"
+            echo "SDK_LABEL=$SDK_LABEL"
+            echo "TAG=$TAG"
+            echo "COMMIT=$ACTUAL_COMMIT"
+            echo "SOURCE_REPO=$EXPECTED_SOURCE_REPO"
+            echo "SKILL_NAME=$SKILL_NAME"
+          } >> "$GITHUB_ENV"
+
+          echo "Selected ${SDK_LABEL} ${TAG} at ${ACTUAL_COMMIT} from ${EXPECTED_SOURCE_REPO}." \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout orchestrator configuration
         uses: actions/checkout@v4
@@ -84,29 +189,36 @@ jobs:
           ./install.sh
 
       - uses: dtolnay/rust-toolchain@stable
-        if: env.SDK == 'milvus-sdk-rust'
+        if: env.SDK == 'rust'
 
       - uses: actions/setup-java@v4
-        if: env.SDK == 'milvus-sdk-java'
+        if: env.SDK == 'java'
         with:
           distribution: temurin
           java-version: '8'
+
+      - uses: actions/setup-python@v5
+        if: env.SDK == 'pymilvus'
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-go@v5
+        if: env.SDK == 'go'
+        with:
+          go-version: stable
+
+      - uses: actions/setup-dotnet@v4
+        if: env.SDK == 'csharp'
+        with:
+          dotnet-version: '8.x'
 
       - name: Resolve tagged SDK checkout through skill helper
         run: |
           set -euo pipefail
 
-          case "$SDK" in
-            milvus-sdk-cpp) SDK_KEY=cpp ;;
-            milvus-sdk-java) SDK_KEY=java ;;
-            milvus-sdk-rust) SDK_KEY=rust ;;
-            milvus-sdk-csharp) SDK_KEY=csharp ;;
-            *) echo "unsupported SDK: $SDK" >&2; exit 1 ;;
-          esac
-
           RESOLVED=$(python3 \
-            "$HOME/.opencode/skills/${SDK}/scripts/resolve_repo.py" \
-            --sdk "$SDK_KEY" \
+            "$HOME/.opencode/skills/${SKILL_NAME}/scripts/resolve_repo.py" \
+            --sdk "$SDK" \
             --branch "$TAG")
 
           readarray -t FIELDS < <(printf '%s\n' "$RESOLVED" | python3 -c '
@@ -120,7 +232,7 @@ jobs:
           RESOLVED_COMMIT=${FIELDS[1]}
           RESOLVED_PATH=${FIELDS[2]}
 
-          EXPECTED_REPOSITORY="milvus-io/${SDK}"
+          EXPECTED_REPOSITORY="$SOURCE_REPO"
           if [ "$REPOSITORY" != "$EXPECTED_REPOSITORY" ]; then
             echo "resolver returned unexpected repository: $REPOSITORY" >&2
             exit 1
@@ -182,7 +294,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          PROMPT="更新 ${SDK} SDK 的 API Reference 到最新版本。"
+          PROMPT="更新 ${SDK_LABEL} SDK 的 API Reference 到最新版本。"
           PROMPT+=" 当前最新版本是 ${TAG}。"
           PROMPT+=" The exact tagged SDK checkout is available at ${SDK_REPO_DIR}; its commit is ${COMMIT}."
           PROMPT+=" Use and prefer that checkout."
@@ -215,7 +327,7 @@ jobs:
             > "$RUNNER_TEMP/api-reference.patch"
 
           if [ ! -s "$RUNNER_TEMP/api-reference.patch" ]; then
-            echo "No API Reference changes for ${SDK} ${TAG}." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "No API Reference changes for ${SDK_LABEL} ${TAG}." | tee -a "$GITHUB_STEP_SUMMARY"
             echo "HAS_PATCH=false" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -251,7 +363,7 @@ jobs:
           git -C "$PUBLISH_DIR" \
             -c core.hooksPath=/dev/null \
             commit --no-verify -s \
-            -m "Update ${SDK} API Reference to ${TAG}"
+            -m "Update ${SDK_LABEL} API Reference to ${TAG}"
 
           gh auth setup-git --hostname github.com
           git -C "$PUBLISH_DIR" push -u origin "HEAD:refs/heads/${BRANCH}"
@@ -260,8 +372,8 @@ jobs:
             --repo milvus-io/web-content \
             --base master \
             --head "$BRANCH" \
-            --title "Update ${SDK} API Reference to ${TAG}" \
-            --body "Automated API Reference update for ${SDK} ${TAG}.")
+            --title "Update ${SDK_LABEL} API Reference to ${TAG}" \
+            --body "Automated API Reference update for ${SDK_LABEL} ${TAG}.")
           PR_NUMBER="${PR_URL##*/}"
 
           gh pr merge "$PR_NUMBER" \
@@ -269,5 +381,5 @@ jobs:
             --rebase \
             --delete-branch
 
-          echo "Created and merged PR #$PR_NUMBER for ${SDK} ${TAG}." \
+          echo "Created and merged PR #$PR_NUMBER for ${SDK_LABEL} ${TAG}." \
             | tee -a "$GITHUB_STEP_SUMMARY"

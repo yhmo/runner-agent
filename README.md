@@ -46,6 +46,34 @@ SDK repositories need a separate `PRIVATE_DISPATCH_TOKEN` capable of calling `re
 
 ## Manual test
 
+The update workflow can also be started manually from GitHub:
+
+```text
+https://github.com/yhmo/runner-agent/actions/workflows/update-sdk-api-reference.yaml
+```
+
+Select one of:
+
+```text
+pymilvus / java / go / cpp / rust / csharp / node
+```
+
+| Manual SDK | Canonical source repository |
+|---|---|
+| `pymilvus` | `milvus-io/pymilvus` |
+| `java` | `milvus-io/milvus-sdk-java` |
+| `go` | `milvus-io/milvus` |
+| `cpp` | `milvus-io/milvus-sdk-cpp` |
+| `rust` | `milvus-io/milvus-sdk-rust` |
+| `csharp` | `milvus-io/milvus-sdk-csharp` |
+| `node` | `milvus-io/milvus-sdk-node` |
+
+Then provide either an exact tag or the special value `latest`. GitHub workflow input dropdowns cannot query tags from another repository dynamically, so `latest` is resolved inside the workflow from the canonical SDK repository's tags and pinned to an exact commit before opencode starts.
+
+For `go`, the source repository is `milvus-io/milvus`, and `latest` prefers dedicated Go SDK tags in the `client/vX.Y.Z` format. Other SDKs use canonical SDK repositories and `vX.Y.Z` tags.
+
+A raw `repository_dispatch` can still be sent with:
+
 ```bash
 SDK=milvus-sdk-java
 TAG=v3.0.11
