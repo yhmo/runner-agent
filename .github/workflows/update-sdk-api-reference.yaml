@@ -1,6 +1,6 @@
 name: Update SDK API Reference
 
-run-name: update ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk || github.event.client_payload.sdk }} docs to ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.event.client_payload.tag }}
+run-name: update ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk || github.event.client_payload.sdk }} docs to ${{ github.event_name == 'workflow_dispatch' && 'latest' || github.event.client_payload.tag }}
 
 on:
   repository_dispatch:
@@ -21,11 +21,6 @@ on:
           - rust
           - csharp
           - node
-      tag:
-        description: Exact release tag, or latest to resolve the latest stable SDK tag
-        required: true
-        type: string
-        default: latest
 
 concurrency:
   group: sdk-docs-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk || github.event.client_payload.sdk }}
@@ -36,7 +31,7 @@ permissions:
 
 env:
   SDK: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk || github.event.client_payload.sdk }}
-  TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.event.client_payload.tag }}
+  TAG: ${{ github.event_name == 'workflow_dispatch' && 'latest' || github.event.client_payload.tag }}
   COMMIT: ${{ github.event.client_payload.commit }}
   SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
 

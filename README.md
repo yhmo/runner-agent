@@ -68,7 +68,7 @@ pymilvus / java / go / cpp / rust / csharp / node
 | `csharp` | `milvus-io/milvus-sdk-csharp` |
 | `node` | `milvus-io/milvus-sdk-node` |
 
-Then provide either an exact tag or the special value `latest`. GitHub workflow input dropdowns cannot query tags from another repository dynamically, so `latest` is resolved inside the workflow from the canonical SDK repository's tags and pinned to an exact commit before opencode starts.
+The manual run form does not accept a tag. The workflow always resolves the latest stable tag from the canonical SDK repository and pins it to an exact commit before opencode starts.
 
 For `go`, the source repository is `milvus-io/milvus`, and `latest` prefers dedicated Go SDK tags in the `client/vX.Y.Z` format. Other SDKs use canonical SDK repositories and `vX.Y.Z` tags.
 
