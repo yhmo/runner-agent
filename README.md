@@ -58,6 +58,13 @@ Select one of:
 pymilvus / java / go / cpp / rust / csharp / node
 ```
 
+Then select the documentation line:
+
+```text
+3.0  # latest v3.0.x release
+2.6  # latest v2.6.x release
+```
+
 | Manual SDK | Canonical source repository |
 |---|---|
 | `pymilvus` | `milvus-io/pymilvus` |
@@ -68,7 +75,13 @@ pymilvus / java / go / cpp / rust / csharp / node
 | `csharp` | `milvus-io/milvus-sdk-csharp` |
 | `node` | `milvus-io/milvus-sdk-node` |
 
-The manual run form does not accept a tag. The workflow always resolves the latest stable tag from the canonical SDK repository and pins it to an exact commit before opencode starts.
+The manual run form does not accept a tag. For the selected release line, the workflow resolves the latest stable tag from the canonical SDK repository and pins it to an exact commit before opencode starts.
+
+The generated changes are restricted to:
+
+```text
+API_Reference/<sdk>/v<release-line>.x/
+```
 
 For `go`, the source repository is `milvus-io/milvus`, and `latest` prefers dedicated Go SDK tags in the `client/vX.Y.Z` format. Other SDKs use canonical SDK repositories and `vX.Y.Z` tags.
 

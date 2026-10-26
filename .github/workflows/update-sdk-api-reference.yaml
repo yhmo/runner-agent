@@ -1,6 +1,6 @@
 name: Update SDK API Reference
 
-run-name: update ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk || github.event.client_payload.sdk }} docs to ${{ github.event_name == 'workflow_dispatch' && 'latest' || github.event.client_payload.tag }}
+run-name: update ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk || github.event.client_payload.sdk }} ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_line || '' }} docs to ${{ github.event_name == 'workflow_dispatch' && 'latest' || github.event.client_payload.tag }}
 
 on:
   repository_dispatch:
@@ -21,6 +21,14 @@ on:
           - rust
           - csharp
           - node
+      release_line:
+        description: API Reference documentation line to update
+        required: true
+        type: choice
+        default: '3.0'
+        options:
+          - '3.0'
+          - '2.6'
 
 concurrency:
   group: sdk-docs-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk || github.event.client_payload.sdk }}
@@ -31,6 +39,7 @@ permissions:
 
 env:
   SDK: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk || github.event.client_payload.sdk }}
+  RELEASE_LINE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_line || '' }}
   TAG: ${{ github.event_name == 'workflow_dispatch' && 'latest' || github.event.client_payload.tag }}
   COMMIT: ${{ github.event.client_payload.commit }}
   SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
@@ -49,6 +58,13 @@ jobs:
 
           test -n "$SDK" -a -n "$TAG" \
             || { echo "missing sdk/tag input" >&2; exit 1; }
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            case "$RELEASE_LINE" in
+              3.0|2.6) ;;
+              *) echo "unsupported release line: $RELEASE_LINE" >&2; exit 1 ;;
+            esac
+          fi
 
           case "$SDK" in
             pymilvus|milvus-sdk-python)
@@ -98,10 +114,11 @@ jobs:
 
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "$TAG" = "latest" ]; then
             LATEST_TAG=$(git ls-remote --tags "https://github.com/${EXPECTED_SOURCE_REPO}.git" \
-              | SDK_KEY="$SDK_KEY" python3 -c '
+              | SDK_KEY="$SDK_KEY" RELEASE_LINE="$RELEASE_LINE" python3 -c '
                 import os, re, sys
 
                 sdk = os.environ["SDK_KEY"]
+                major, minor = map(int, os.environ["RELEASE_LINE"].split("."))
                 if sdk == "go":
                     pattern = re.compile(r"^client/v(\d+)\.(\d+)\.(\d+)$")
                 else:
@@ -115,13 +132,15 @@ jobs:
                     tag = ref.removeprefix("refs/tags/")
                     match = pattern.match(tag)
                     if match:
-                        tags.append((tuple(map(int, match.groups())), tag))
+                        version = tuple(map(int, match.groups()))
+                        if version[:2] == (major, minor):
+                            tags.append((version, tag))
                 if not tags:
-                    raise SystemExit("no stable release tag found")
+                    raise SystemExit(f"no stable release tag found for {major}.{minor}")
                 print(max(tags)[1])
               ')
             TAG="$LATEST_TAG"
-            echo "Resolved latest ${SDK_LABEL} tag to ${TAG}."
+            echo "Resolved latest ${SDK_LABEL} ${RELEASE_LINE} tag to ${TAG}."
           fi
 
           if [ "$SDK_KEY" = "go" ]; then
@@ -131,6 +150,17 @@ jobs:
           fi
           if [[ ! "$TAG" =~ $TAG_PATTERN ]]; then
             echo "bad tag for ${SDK_LABEL}: $TAG" >&2
+            exit 1
+          fi
+
+          if [[ ! "$TAG" =~ ^(client/)?v([0-9]+)\.([0-9]+)\.[0-9]+ ]]; then
+            echo "unable to determine release line from tag: $TAG" >&2
+            exit 1
+          fi
+          if [ -z "$RELEASE_LINE" ]; then
+            RELEASE_LINE="${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          elif [[ "$RELEASE_LINE" != "${BASH_REMATCH[2]}.${BASH_REMATCH[3]}" ]]; then
+            echo "tag ${TAG} does not belong to release line ${RELEASE_LINE}" >&2
             exit 1
           fi
 
@@ -152,9 +182,11 @@ jobs:
             echo "COMMIT=$ACTUAL_COMMIT"
             echo "SOURCE_REPO=$EXPECTED_SOURCE_REPO"
             echo "SKILL_NAME=$SKILL_NAME"
+            echo "RELEASE_LINE=$RELEASE_LINE"
+            echo "DOC_LINE_DIRECTORY=API_Reference/${SDK_LABEL}/v${RELEASE_LINE}.x"
           } >> "$GITHUB_ENV"
 
-          echo "Selected ${SDK_LABEL} ${TAG} at ${ACTUAL_COMMIT} from ${EXPECTED_SOURCE_REPO}." \
+          echo "Selected ${SDK_LABEL} ${RELEASE_LINE} line tag ${TAG} at ${ACTUAL_COMMIT} from ${EXPECTED_SOURCE_REPO}." \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout orchestrator configuration
@@ -289,9 +321,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          PROMPT="更新 ${SDK_LABEL} SDK 的 API Reference 到最新版本。"
-          PROMPT+=" 当前最新版本是 ${TAG}。"
+          PROMPT="更新 ${SDK_LABEL} SDK ${RELEASE_LINE} 文档线的 API Reference 到最新版本。"
+          PROMPT+=" 当前${RELEASE_LINE}文档线最新发布版本是 ${TAG}。"
           PROMPT+=" The exact tagged SDK checkout is available at ${SDK_REPO_DIR}; its commit is ${COMMIT}."
+          PROMPT+=" Update only ${DOC_LINE_DIRECTORY} and do not modify any other SDK or release-line directory."
           PROMPT+=" Use and prefer that checkout."
           PROMPT+=" If no SDK example exists, synthesize a minimal example from the tagged public API signatures and documented usage logic."
           PROMPT+=" Do not execute examples, do not connect to Milvus, and do not perform live API calls."
@@ -310,19 +343,20 @@ jobs:
 
           git -C "$GITHUB_WORKSPACE/web-content" add --intent-to-add -- API_Reference
 
+          EXPECTED_DOC_PATH="${DOC_LINE_DIRECTORY}/"
           OUTSIDE=$(git -C "$GITHUB_WORKSPACE/web-content" diff --name-only HEAD \
-            | grep -Ev '^API_Reference/' || true)
+            | grep -Ev "^${EXPECTED_DOC_PATH}" || true)
           if [ -n "$OUTSIDE" ]; then
-            echo "opencode attempted to modify paths outside API_Reference/:" >&2
+            echo "opencode attempted to modify paths outside ${EXPECTED_DOC_PATH}:" >&2
             printf '%s\n' "$OUTSIDE" >&2
             exit 1
           fi
 
-          git -C "$GITHUB_WORKSPACE/web-content" diff --binary HEAD -- API_Reference \
+          git -C "$GITHUB_WORKSPACE/web-content" diff --binary HEAD -- "$DOC_LINE_DIRECTORY" \
             > "$RUNNER_TEMP/api-reference.patch"
 
           if [ ! -s "$RUNNER_TEMP/api-reference.patch" ]; then
-            echo "No API Reference changes for ${SDK_LABEL} ${TAG}." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "No API Reference changes for ${SDK_LABEL} ${RELEASE_LINE} ${TAG}." | tee -a "$GITHUB_STEP_SUMMARY"
             echo "HAS_PATCH=false" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -353,7 +387,7 @@ jobs:
           git -C "$PUBLISH_DIR" config user.name "$GIT_AUTHOR_NAME"
           git -C "$PUBLISH_DIR" config user.email "$GIT_AUTHOR_EMAIL"
           git -C "$PUBLISH_DIR" checkout -b "$BRANCH" origin/master
-          git -C "$PUBLISH_DIR" add -- API_Reference
+          git -C "$PUBLISH_DIR" add -- "$DOC_LINE_DIRECTORY"
 
           git -C "$PUBLISH_DIR" \
             -c core.hooksPath=/dev/null \
