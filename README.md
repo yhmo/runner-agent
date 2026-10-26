@@ -61,9 +61,12 @@ pymilvus / java / go / cpp / rust / csharp / node
 Then select the documentation line:
 
 ```text
+3.1  # latest v3.1.x release
 3.0  # latest v3.0.x release
 2.6  # latest v2.6.x release
 ```
+
+Selecting a release line that a SDK has not published yet fails during validation, before opencode starts. It does not fall back to another release line.
 
 | Manual SDK | Canonical source repository |
 |---|---|
