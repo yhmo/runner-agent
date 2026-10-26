@@ -47,8 +47,14 @@ jobs:
 
           gh api repos/yhmo/runner-agent/dispatches \
             --method POST \
-            --field event_type=sdk-release \
-            --field "client_payload[sdk]=<SDK_NAME>" \
-            --field "client_payload[tag]=${TAG}" \
-            --field "client_payload[commit]=${COMMIT}" \
-            --field "client_payload[source_repo]=${SOURCE_REPO}"
+            --input - <<EOF
+          {
+            "event_type": "sdk-release",
+            "client_payload": {
+              "sdk": "<SDK_NAME>",
+              "tag": "${TAG}",
+              "commit": "${COMMIT}",
+              "source_repo": "${SOURCE_REPO}"
+            }
+          }
+          EOF
