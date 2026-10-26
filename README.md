@@ -2,6 +2,8 @@
 
 Private GitHub Actions orchestrator that updates Milvus SDK API Reference documentation after SDK releases.
 
+See [DESIGN.md](DESIGN.md) for the full design, trust boundaries, workflow specifications, and rollout plan.
+
 ## Flow
 
 1. A Milvus SDK repository sends a `repository_dispatch` event named `sdk-release`.
