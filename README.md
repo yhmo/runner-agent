@@ -11,7 +11,7 @@ See [DESIGN.md](DESIGN.md) for the full design, trust boundaries, workflow speci
 3. The runner installs skills from `yhmo/milvus-skills`.
 4. The SDK skill resolver automatically clones the tagged SDK repository with depth 1.
 5. The runner clones `milvus-io/web-content` with depth 1.
-6. opencode updates only `API_Reference/` inside the web-content checkout.
+6. opencode updates only the selected SDK documentation line under `API_Reference/` inside the web-content checkout.
 7. The workflow exports a restricted patch and republishes it from a clean web-content clone.
 8. The workflow creates and immediately rebase-merges a PR as the personal account that owns `WEB_CONTENT_PERSONAL_PAT`.
 
@@ -91,9 +91,10 @@ For `go`, the source repository is `milvus-io/milvus`, and `latest` prefers dedi
 A raw `repository_dispatch` can still be sent with:
 
 ```bash
-SDK=milvus-sdk-java
+SDK=java
+SOURCE_REPO=milvus-io/milvus-sdk-java
 TAG=v3.0.11
-COMMIT=$(gh api "repos/milvus-io/${SDK}/commits/${TAG}" --jq .sha)
+COMMIT=$(gh api "repos/${SOURCE_REPO}/commits/${TAG}" --jq .sha)
 
 gh api repos/yhmo/runner-agent/dispatches \
   --method POST \
@@ -104,7 +105,7 @@ gh api repos/yhmo/runner-agent/dispatches \
     "sdk": "${SDK}",
     "tag": "${TAG}",
     "commit": "${COMMIT}",
-    "source_repo": "milvus-io/${SDK}"
+    "source_repo": "${SOURCE_REPO}"
   }
 }
 EOF
@@ -114,6 +115,6 @@ EOF
 
 - `OPENCODE_*` secrets are exposed only to opencode configuration and generation steps.
 - `WEB_CONTENT_PERSONAL_PAT` is exposed only to the trusted publication step, not to opencode.
-- The opencode working tree is never reused for Git push. Changes are exported as an `API_Reference/`-only binary patch and applied to a fresh shallow clone.
+- The opencode working tree is never reused for Git push. Changes are exported as a selected `API_Reference/<sdk>/v<release-line>.x/`-only binary patch and applied to a fresh shallow clone.
 - Git hooks are disabled during publication.
 - Direct merge is used because `web-content/master` currently has no required reviews or checks.
