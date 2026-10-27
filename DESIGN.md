@@ -547,14 +547,18 @@ The end-to-end receiver/publication path has been validated with real web-conten
 
 | SDK | Release | Result |
 |---|---|---|
+| Java | `v2.6.27` | real tag-push dispatch; PR [#1236](https://github.com/milvus-io/web-content/pull/1236), merged |
+| Java | `v3.0.12` | real tag-push dispatch; PR [#1237](https://github.com/milvus-io/web-content/pull/1237), merged |
 | Java | `v3.0.11` | PR [#1225](https://github.com/milvus-io/web-content/pull/1225), merged |
 | Rust | `v3.0.3` | PR [#1233](https://github.com/milvus-io/web-content/pull/1233), merged |
 
 Java and C# sender handshakes were also validated through their manual sender mode. Both dispatch
 runs succeeded; the receiver runs were then cancelled before model use to avoid unnecessary cost.
 
-No future release tag has yet exercised a newly deployed sender's `push tag` event because those
-senders were added after the repositories' current historical tags.
+The Java `v2.6.27` and `v3.0.12` runs are the first validation of the newly deployed sender's real
+`push tag` path. Both sender runs completed in approximately seven seconds. Because both events used
+the normalized `java` SDK ID, the receiver queued them serially under the Java concurrency group and
+processed the 2.6 line before the 3.0 line.
 
 ## Operational notes
 
@@ -618,13 +622,15 @@ Already completed:
 4. Seven-SDK receiver support deployed.
 5. Rust and Java end-to-end publication validated.
 6. Rust, C++, Java, and C# senders deployed to all currently relevant 2.6/3.0 release branches.
+7. Java sender tag-push behavior validated with both the `v2.6.27` and `v3.0.12` release tags.
 
 Next:
 
 1. Add the Python sender to `milvus-io/pymilvus`.
 2. Add the Go sender to `milvus-io/milvus`, restricted to `client/v*.*.*` tags.
 3. Add the Node sender to `milvus-io/milvus-sdk-node`.
-4. Wait for or create an authorized future release tag and verify a real tag-push dispatch.
+4. Exercise future tag-push dispatches for Rust, C++, C#, and the remaining SDK senders after those
+   repositories cut new release tags.
 5. Pin `yhmo/milvus-skills`.
 6. Move private-repo branch protection to a plan/organization that supports it.
 7. Replace the classic web-content PAT with a fine-grained PAT when available.
