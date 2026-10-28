@@ -44,6 +44,7 @@ env:
   TAG: ${{ github.event_name == 'workflow_dispatch' && 'latest' || github.event.client_payload.tag }}
   COMMIT: ${{ github.event.client_payload.commit }}
   SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+  RUN_UPDATE: 'true'
 
 jobs:
   update:
@@ -113,8 +114,8 @@ jobs:
             *) echo "unsupported SDK: $SDK" >&2; exit 1 ;;
           esac
 
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "$TAG" = "latest" ]; then
-            LATEST_TAG=$(git ls-remote --tags "https://github.com/${EXPECTED_SOURCE_REPO}.git" \
+          select_latest_line_tag() {
+            git ls-remote --tags "https://github.com/${EXPECTED_SOURCE_REPO}.git" \
               | SDK_KEY="$SDK_KEY" RELEASE_LINE="$RELEASE_LINE" python3 -c '
                 import os, re, sys
 
@@ -139,7 +140,36 @@ jobs:
                 if not tags:
                     raise SystemExit(f"no stable release tag found for {major}.{minor}")
                 print(max(tags)[1])
-              ')
+              '
+          }
+
+          tag_is_stale() {
+            INCOMING_TAG="$1" LINE_LATEST_TAG="$2" python3 -c '
+              import os, re, sys
+
+              pattern = re.compile(
+                  r"^(?:client/)?v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$"
+              )
+
+              def parse(name: str):
+                  match = pattern.match(name)
+                  if not match:
+                      raise SystemExit(f"cannot compare non-release tag: {name}")
+                  numbers = tuple(map(int, match.groups()[:3]))
+                  prerelease = match.group(4)
+                  return numbers, prerelease
+
+              incoming, incoming_prerelease = parse(os.environ["INCOMING_TAG"])
+              latest, _ = parse(os.environ["LINE_LATEST_TAG"])
+              stale = incoming < latest or (
+                  incoming == latest and incoming_prerelease is not None
+              )
+              print("true" if stale else "false")
+            '
+          }
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "$TAG" = "latest" ]; then
+            LATEST_TAG=$(select_latest_line_tag)
             TAG="$LATEST_TAG"
             echo "Resolved latest ${SDK_LABEL} ${RELEASE_LINE} tag to ${TAG}."
           fi
@@ -176,6 +206,17 @@ jobs:
             exit 1
           fi
 
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            LINE_LATEST_TAG=$(select_latest_line_tag)
+            if [ "$(tag_is_stale "$TAG" "$LINE_LATEST_TAG")" = true ]; then
+              MESSAGE="Skipped stale ${SDK_LABEL} ${TAG}; current ${RELEASE_LINE} line latest is ${LINE_LATEST_TAG}."
+              echo "$MESSAGE" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "RUN_UPDATE=false" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "Accepted ${SDK_LABEL} ${TAG}; current ${RELEASE_LINE} line latest is ${LINE_LATEST_TAG}."
+          fi
+
           {
             echo "SDK=$SDK_KEY"
             echo "SDK_LABEL=$SDK_LABEL"
@@ -191,21 +232,25 @@ jobs:
             | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout orchestrator configuration
+        if: env.RUN_UPDATE == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - uses: actions/setup-node@v4
+        if: env.RUN_UPDATE == 'true'
         with:
           node-version: 20
 
       - name: Install opencode
+        if: env.RUN_UPDATE == 'true'
         run: |
           npm install -g opencode-ai
           opencode --version
 
       - name: Clone and install Milvus skills
+        if: env.RUN_UPDATE == 'true'
         run: |
           set -euo pipefail
 
@@ -217,30 +262,31 @@ jobs:
           ./install.sh
 
       - uses: dtolnay/rust-toolchain@stable
-        if: env.SDK == 'rust'
+        if: env.RUN_UPDATE == 'true' && env.SDK == 'rust'
 
       - uses: actions/setup-java@v4
-        if: env.SDK == 'java'
+        if: env.RUN_UPDATE == 'true' && env.SDK == 'java'
         with:
           distribution: temurin
           java-version: '8'
 
       - uses: actions/setup-python@v5
-        if: env.SDK == 'pymilvus'
+        if: env.RUN_UPDATE == 'true' && env.SDK == 'pymilvus'
         with:
           python-version: '3.11'
 
       - uses: actions/setup-go@v5
-        if: env.SDK == 'go'
+        if: env.RUN_UPDATE == 'true' && env.SDK == 'go'
         with:
           go-version: stable
 
       - uses: actions/setup-dotnet@v4
-        if: env.SDK == 'csharp'
+        if: env.RUN_UPDATE == 'true' && env.SDK == 'csharp'
         with:
           dotnet-version: '8.x'
 
       - name: Resolve tagged SDK checkout through skill helper
+        if: env.RUN_UPDATE == 'true'
         run: |
           set -euo pipefail
 
@@ -274,6 +320,7 @@ jobs:
           echo "SDK_REPO_DIR=$RESOLVED_PATH" >> "$GITHUB_ENV"
 
       - name: Clone web-content shallowly
+        if: env.RUN_UPDATE == 'true'
         run: |
           set -euo pipefail
           git clone --depth 1 --branch master --single-branch \
@@ -281,6 +328,7 @@ jobs:
             "$GITHUB_WORKSPACE/web-content"
 
       - name: Inject opencode configuration
+        if: env.RUN_UPDATE == 'true'
         env:
           OPENCODE_BASE_URL: ${{ secrets.OPENCODE_BASE_URL }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
@@ -317,6 +365,7 @@ jobs:
           echo "OPENCODE_FULL_MODEL=aistation/${OPENCODE_MODEL}" >> "$GITHUB_ENV"
 
       - name: Run opencode inside web-content
+        if: env.RUN_UPDATE == 'true'
         env:
           OPENCODE: '1'
         run: |
@@ -339,6 +388,7 @@ jobs:
             "$PROMPT"
 
       - name: Create restricted API Reference patch
+        if: env.RUN_UPDATE == 'true'
         run: |
           set -euo pipefail
 
@@ -365,7 +415,7 @@ jobs:
           echo "HAS_PATCH=true" >> "$GITHUB_ENV"
 
       - name: Publish and merge PR as personal account
-        if: env.HAS_PATCH == 'true'
+        if: env.RUN_UPDATE == 'true' && env.HAS_PATCH == 'true'
         env:
           GH_TOKEN: ${{ secrets.WEB_CONTENT_PERSONAL_PAT }}
           GIT_AUTHOR_NAME: ${{ vars.GIT_AUTHOR_NAME }}

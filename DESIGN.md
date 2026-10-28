@@ -148,7 +148,10 @@ The run does not fall back to another release line and does not start opencode.
 ```
 
 For an automatic dispatch, the receiver derives the release line from the tag's major and minor
-version. It does not need a separate `release_line` payload field.
+version. It does not need a separate `release_line` payload field. After validating the exact tag
+and commit, the receiver also resolves the latest stable tag in that line. An incoming automatic tag
+older than that line latest is skipped successfully; it does not roll the shared documentation line
+backward.
 
 ## Receiver workflow
 
@@ -169,7 +172,9 @@ For every run, the receiver:
 5. For manual runs, resolves the latest stable tag in the selected line.
 6. Queries GitHub for the tag's actual commit SHA.
 7. Compares an automatic dispatch's supplied commit with that SHA.
-8. Publishes the selected `SDK`, `TAG`, `COMMIT`, `SOURCE_REPO`, skill name, release line, and
+8. For automatic dispatches, resolves the selected line's latest stable tag and rejects stale work
+   as a successful skip.
+9. Publishes the selected `SDK`, `TAG`, `COMMIT`, `SOURCE_REPO`, skill name, release line, and
    documentation directory to subsequent steps.
 
 Manual latest-tag resolution uses `git ls-remote --tags`, not model judgment. It accepts only stable
@@ -182,6 +187,18 @@ Other: vMAJOR.MINOR.PATCH
 
 It excludes prerelease, beta, RC, and development suffixes and chooses the largest semantic version
 within the selected major/minor line.
+
+Automatic exact-tag events use the same line-latest calculation as a monotonic guard. For example,
+if a repository's stable line latest is `v3.0.2`, a later dispatch for `v3.0.1` exits successfully
+without running opencode:
+
+```text
+Skipped stale <sdk> v3.0.1; current 3.0 line latest is v3.0.2.
+```
+
+An equal or newer stable tag proceeds. A prerelease with the same numeric version as the stable
+line latest is also considered stale, while a prerelease with a higher numeric patch than the known
+stable latest may proceed.
 
 ### 2. Install language toolchain and skills
 
@@ -360,6 +377,10 @@ source_repo  = canonical source repository
 The manual trigger accepts an existing exact tag and full commit SHA. It is used to validate the
 dispatch token and receiver integration without creating or moving a release tag.
 
+The receiver accepts an automatic exact tag only when it is current for its release line. Re-pushing
+an older patch tag after a newer stable release produces a successful skip rather than downgrading
+the shared `vX.Y.x` documentation directory.
+
 The sender performs these checks:
 
 1. The canonical repository guard passes.
@@ -535,10 +556,12 @@ Important edge cases:
 6. **Patch outside selected line**: run fails; no PR is created.
 7. **web-content master changed incompatibly**: `git apply --check` fails safely.
 8. **Old release tags**: do not retroactively trigger a newly added sender.
-9. **New release line**: if a stable SDK tag exists, the current implementation may create the
+9. **Stale automatic tag**: if an exact tag is older than the latest stable tag in its release line,
+   the run exits successfully with a summary and skips opencode/publication.
+10. **New release line**: if a stable SDK tag exists, the current implementation may create the
    corresponding `vX.Y.x` documentation directory. If automatic creation is undesired, add an
    existence check for the selected documentation directory before opencode.
-10. **Temporary SDK files**: only the selected documentation-line directory is exported into the
+11. **Temporary SDK files**: only the selected documentation-line directory is exported into the
     publication patch.
 
 ## Validation history

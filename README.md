@@ -80,6 +80,8 @@ Selecting a release line that a SDK has not published yet fails during validatio
 
 The manual run form does not accept a tag. For the selected release line, the workflow resolves the latest stable tag from the canonical SDK repository and pins it to an exact commit before opencode starts.
 
+Automatic tag events are monotonic per release line. If an older patch tag is dispatched after a newer stable tag, the workflow exits successfully without running opencode or creating a PR, preventing the shared `vX.Y.x` documentation directory from being downgraded.
+
 The generated changes are restricted to:
 
 ```text
