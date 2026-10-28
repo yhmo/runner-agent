@@ -574,6 +574,7 @@ The end-to-end receiver/publication path has been validated with real web-conten
 | Java | `v3.0.12` | real tag-push dispatch; PR [#1237](https://github.com/milvus-io/web-content/pull/1237), merged |
 | Java | `v3.0.11` | PR [#1225](https://github.com/milvus-io/web-content/pull/1225), merged |
 | Rust | `v3.0.3` | PR [#1233](https://github.com/milvus-io/web-content/pull/1233), merged |
+| Rust | stale `v3.0.2` | successful skip; no opencode/publication |
 
 Java and C# sender handshakes were also validated through their manual sender mode. Both dispatch
 runs succeeded; the receiver runs were then cancelled before model use to avoid unnecessary cost.
@@ -582,6 +583,10 @@ The Java `v2.6.27` and `v3.0.12` runs are the first validation of the newly depl
 `push tag` path. Both sender runs completed in approximately seven seconds. Because both events used
 the normalized `java` SDK ID, the receiver queued them serially under the Java concurrency group and
 processed the 2.6 line before the 3.0 line.
+
+The stale Rust `v3.0.2` dispatch was later sent while `v3.0.3` was the 3.0 line latest. The receiver
+completed successfully, wrote the skip reason to the step summary, and skipped every model, patch,
+and publication step.
 
 ## Operational notes
 
