@@ -775,6 +775,25 @@ GitHub requires a maintainer to approve workflow runs for the first PR of a firs
 to a public repository. That first sender run is therefore not automatic; subsequent PRs from the
 same author dispatch without approval.
 
+### Sender deployment checklist
+
+To deploy the sender to a SDK repository:
+
+1. Copy `templates/notify-pr-review.yaml` into the repository as
+   `.github/workflows/notify-pr-review.yaml`.
+2. Replace `<SDK_REPO>` in the canonical-repository guard
+   (`if: github.repository == 'milvus-io/<SDK_REPO>'`) with the actual repository name.
+3. Confirm the `PRIVATE_DISPATCH_TOKEN` secret exists in that repository; the SDK docs flow already
+   configures it, so it can be reused as is.
+4. Merge the sender to the default branch **and to every currently active release branch**
+   (`2.6`, `3.0`, and so on). A `pull_request_target` workflow file is resolved from the PR's base
+   branch, so a PR targeting a release branch dispatches only if the sender is present on that
+   branch.
+5. Validate with a test PR against each base branch that should be reviewed; confirm the dispatch
+   reaches `yhmo/runner-agent` and the receiver posts inline comments.
+
+The sender needs no new credential: it reuses the existing `PRIVATE_DISPATCH_TOKEN`.
+
 ## Receiver workflow
 
 The receiver lives at:
