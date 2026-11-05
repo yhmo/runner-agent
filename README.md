@@ -23,6 +23,8 @@ Configure these Actions secrets:
 - `OPENCODE_API_KEY`
 - `OPENCODE_MODEL`
 - `WEB_CONTENT_PERSONAL_PAT`
+- `PR_REVIEW_PAT` (for the PR review workflow only; fine-grained PAT with `Pull requests: Read and
+  write` on each reviewed repository)
 
 Configure these Actions variables:
 
@@ -32,7 +34,8 @@ Configure these Actions variables:
 Configure Actions permissions under **Settings → Actions → General**:
 
 - Allow GitHub-created actions
-- Allow the specified action `dtolnay/rust-toolchain@stable`
+- Allow the specified action
+  `dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec`
 - Keep the default workflow token permission read-only
 
 `WEB_CONTENT_PERSONAL_PAT` must belong to the personal GitHub account and have access to `milvus-io/web-content`. A fine-grained PAT should grant:

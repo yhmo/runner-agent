@@ -220,10 +220,8 @@ It clones `yhmo/milvus-skills` over public HTTPS and executes:
 ```
 
 This symlinks skills into opencode's skill directory. Because the repository is public, no SSH
-deploy key or `MILVUS_SKILLS_DEPLOY_KEY` secret is required.
-
-The current implementation still clones the mutable default branch. Pinning `milvus-skills` to a
-reviewed commit or tag remains a production hardening task.
+deploy key or `MILVUS_SKILLS_DEPLOY_KEY` secret is required. The docs flow tracks the mutable
+default branch of `milvus-skills`.
 
 ### 3. Resolve the exact SDK checkout
 
@@ -470,16 +468,16 @@ Current Actions permissions:
 Actions enabled
 Allowed actions: selected
 GitHub-created actions: allowed
-Specified action: dtolnay/rust-toolchain@stable
+Specified action: dtolnay/rust-toolchain@<full SHA>
 Verified creators: not allowed
 Default workflow token: read-only
 ```
 
-The selected-action pattern must include the action tag. Using only
+The selected-action pattern must be the full commit SHA. Using only
 `dtolnay/rust-toolchain` caused startup failures; the working value is:
 
 ```text
-dtolnay/rust-toolchain@stable
+dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
 ```
 
 ### `WEB_CONTENT_PERSONAL_PAT`
@@ -633,11 +631,11 @@ or approval workflow.
 | Risk | Current mitigation | Remaining task |
 |---|---|---|
 | Malicious `runner-agent` workflow change | private repo and read-only workflow token | enable branch/rule protection for `main`; currently unavailable on this personal free-plan private repository |
-| Mutable skills source | HTTPS clone of public `yhmo/milvus-skills` | pin to a reviewed commit/tag |
-| Dispatch token abuse | minimum-purpose PAT and receiver validation | quota, RPM/TPM limits, expiry, rotation, and spend alerts |
+| Mutable skills source | both workflows clone the latest `yhmo/milvus-skills` default branch | pin to a reviewed commit if this risk is accepted |
+| Dispatch token abuse | minimum-purpose PAT and receiver validation; owner allowlist (`milvus-io`, `zilliztech`) | quota, RPM/TPM limits, expiry, rotation, and spend alerts |
 | Prompt injection from SDK/web-content/skills | exact checkout, no publication token in model step, restricted patch, clean publication clone | retain model allowlist and audit generated changes |
 | Automatic merge of generated content | one-commit personal PR and strict path guard | retain rollback procedure; move to PR-only mode if review becomes mandatory |
-| Old action versions | working deployment | upgrade `actions/checkout`, `setup-node`, `setup-java`, and related actions in a controlled pass |
+| Unpinned third-party actions | all actions referenced by full commit SHA | update pins when action releases are deliberately adopted |
 | Sender rollout incomplete | four SDK repositories deployed | deploy PyMilvus, Go, and Node senders |
 
 ## Rollout status and next steps
@@ -662,3 +660,324 @@ Next:
 5. Pin `yhmo/milvus-skills`.
 6. Move private-repo branch protection to a plan/organization that supports it.
 7. Replace the classic web-content PAT with a fine-grained PAT when available.
+
+# PR review → private runner-agent → PR review comments
+
+> Design and implementation status: 2026-11-05.
+>
+> The implementation source of truth is:
+>
+> ```text
+> .github/workflows/review-pull-request.yaml
+> templates/notify-pr-review.yaml
+> ```
+
+## Goal
+
+When a supported SDK repository receives a pull request, the repository sends a minimal
+`repository_dispatch` event to the private orchestrator repository:
+
+```text
+yhmo/runner-agent
+```
+
+The private repository starts a GitHub Actions runner, installs the Milvus skills and the
+`pr-review` skill, checks out the exact PR head commit, runs opencode to review the PR, and posts
+inline review comments on the PR as the maintainer's personal GitHub account.
+
+The receiver does not keep a watch list of repositories. It trusts the notification; the dispatch
+payload carries the PR URL and the pinned head commit. Currently planned senders are:
+
+```text
+milvus-sdk-cpp
+milvus-sdk-java
+milvus-sdk-rust
+milvus-sdk-csharp
+```
+
+Unlike the SDK docs flow, there is no publication step. The review output is the only write
+performed, and it consists exclusively of GitHub PR comments posted by the `pr-review` skill.
+
+## Responsibility and trust boundaries
+
+```text
+public SDK repository
+  ├─ triggers on pull_request_target (opened / synchronize / reopened)
+  ├─ stores only PRIVATE_DISPATCH_TOKEN
+  ├─ sends event_type = pr-review with the PR URL and pinned head SHA
+  └─ never checks out or executes PR code in the sender workflow
+
+yhmo/runner-agent
+  ├─ stores OPENCODE_* secrets
+  ├─ stores PR_REVIEW_PAT (personal account, PR write only)
+  ├─ validates the PR URL and pins the exact head commit
+  ├─ installs skills and runs opencode
+  └─ posts inline comments as the maintainer's personal account
+```
+
+The split keeps the LLM key out of the public SDK repositories. The workflow that can read the
+model credentials and the PR-comment credential exists only on the default branch of the private
+repository.
+
+### Why pull_request_target
+
+A `pull_request` workflow triggered from a forked repository does not receive repository secrets,
+so it cannot read `PRIVATE_DISPATCH_TOKEN` for external-contributor PRs. The sender therefore uses
+`pull_request_target`, which runs the workflow file from the base branch and has access to secrets.
+
+`pull_request_target` is safe here only because the sender never checks out or executes the PR's
+code. It reads event metadata and sends a dispatch. A malicious PR author can neither replace the
+workflow file (it comes from the base branch) nor inject shell or build steps into the sender.
+
+## Sender workflow
+
+Implemented senders live in the SDK repositories as:
+
+```text
+.github/workflows/notify-pr-review.yaml
+```
+
+Trigger:
+
+```yaml
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+```
+
+The sender validates that the canonical repository guard passes and that
+`PRIVATE_DISPATCH_TOKEN` is configured, then dispatches:
+
+```json
+{
+  "event_type": "pr-review",
+  "client_payload": {
+    "pr_url": "https://github.com/milvus-io/<repo>/pull/<number>",
+    "repo": "milvus-io/<repo>",
+    "pr_number": "<number>",
+    "head_sha": "<head commit SHA>",
+    "base_sha": "<base commit SHA>",
+    "action": "opened"
+  }
+}
+```
+
+`synchronize` events carry the new head SHA, so a pushed update triggers a fresh review of the new
+head. `ready_for_review` is included so a PR opened as draft is still reviewed once it is marked
+ready; the draft filter below suppresses it only while it remains a draft.
+
+### Important sender rule
+
+A `pull_request_target` workflow file is resolved from the base branch. The sender must be merged
+to the repository's default branch before PR events will dispatch it.
+
+GitHub requires a maintainer to approve workflow runs for the first PR of a first-time contributor
+to a public repository. That first sender run is therefore not automatic; subsequent PRs from the
+same author dispatch without approval.
+
+## Receiver workflow
+
+The receiver lives at:
+
+```text
+.github/workflows/review-pull-request.yaml
+```
+
+### 1. Validate, pin, and filter the target
+
+The receiver:
+
+1. Reads `pr_url` from the dispatch payload (or the manual `workflow_dispatch` input).
+2. Parses it with a strict pattern and derives the repository and PR number.
+3. Queries GitHub once for the PR metadata and extracts the current head commit, draft state, title,
+   and author.
+4. Compares a supplied `head_sha` with that value and rejects a moved head.
+5. Skips PRs that do not need review. A skip exits successfully and records the reason on the step
+   summary, without installing tools, running opencode, or consuming model quota.
+6. Publishes `REPO`, `REPO_NAME`, `PR_NUMBER`, and `HEAD_SHA` to subsequent steps.
+
+There is no repository allowlist beyond an owner check: the receiver rejects any dispatch whose
+repository owner is neither `milvus-io` nor `zilliztech`. This prevents a leaked or compromised
+dispatch token from triggering reviews of arbitrary repositories, while still accepting PRs from
+either organization without maintaining a per-repo list.
+
+### PR skip filters
+
+The receiver skips (successful exit, no review) a PR when any of the following is true:
+
+| Condition | How it is detected |
+|---|---|
+| Draft PR | `pull.draft == true` |
+| Bot-authored PR | `pull.user.type == "Bot"` — covers Dependabot, Renovate, Snyk, and other bots |
+| Cherry-pick PR | title starts with `[cherry-pick]` (case-insensitive) |
+| Release preparation PR | title matches `Prepare for vX.Y.Z` (case-insensitive), e.g. `Prepare for v3.0.4` |
+
+The filters are evaluated in the receiver, not in the sender, so they apply to manual
+`workflow_dispatch` runs as well and remain a single source of truth. Each skipped run writes its
+reason to the step summary and sets `RUN_REVIEW=false`; every later step is gated on
+`RUN_REVIEW == 'true'`.
+
+### 2. Install tools and skills
+
+The runner installs Node.js, installs a pinned `opencode-ai` version, clones the latest
+`yhmo/milvus-skills` over public HTTPS, and executes `./install.sh`, which symlinks the skills into
+opencode's skill directory. The `pr-review` skill and the repository skills for the SDK senders
+must be present in `milvus-skills`.
+
+### 3. Check out the exact PR head
+
+The receiver checks out the canonical repository at the pinned head commit:
+
+```text
+actions/checkout@v4
+  repository = <repo>
+  ref        = <HEAD_SHA>
+  fetch-depth = 1
+  persist-credentials = false
+```
+
+This checkout gives the repository skill a working tree to navigate for surrounding-code and
+history context. The `pr-review` skill still treats `gh api` as the source of truth for the current
+head.
+
+### 4. Inject opencode configuration and run the review
+
+The receiver combines `ci/opencode.base.json` with `OPENCODE_*` secrets in the same masked
+configuration-value pattern used by the SDK docs flow, then runs:
+
+```bash
+GH_TOKEN="$PR_REVIEW_PAT" opencode run \
+  --dir "$GITHUB_WORKSPACE/$REPO_NAME" \
+  --auto \
+  --model "$OPENCODE_FULL_MODEL" \
+  "pr-review the PR: ${PR_URL}"
+```
+
+`GH_TOKEN` is set only for this step to the personal PR review PAT and masked with
+`::add-mask::`. The `pr-review` skill performs
+the exhaustive review with `gh api` only, validates each comment anchor against the current diff,
+and posts dedicated inline comments (`High` / `Medium` / `Low`) as the PAT owner.
+
+The review step sets `PR_REVIEW_CONCURRENCY=2`, so the skill skips its provider rate-limit probe
+(the probe would read the model API key out of the opencode configuration into the model context)
+and uses a fixed subagent concurrency budget of 2. Tune this value if provider rate limits require
+a different budget.
+
+There is no publish or merge step. No commit, branch, or PR is created.
+
+### 5. Manual trigger
+
+The workflow can also be started manually from GitHub to test without a sender:
+
+```text
+https://github.com/yhmo/runner-agent/actions/workflows/review-pull-request.yaml
+```
+
+`pr_url` is required; `head_sha` is optional and, when empty, the receiver resolves the current
+head.
+
+## Repository configuration
+
+### `yhmo/runner-agent`
+
+The SDK docs flow secrets (`OPENCODE_BASE_URL`, `OPENCODE_API_KEY`, `OPENCODE_MODEL`) are reused.
+The additional secret is:
+
+```text
+PR_REVIEW_PAT
+```
+
+This is a fine-grained PAT owned by the maintainer's personal account, scoped per target SDK
+repository to:
+
+```text
+Metadata        Read-only
+Pull requests   Read and write
+```
+
+No `Contents: write` permission is granted. The runner never pushes; limiting the credential to PR
+writes means even a prompt-injected model can only post comments, never change repository content.
+
+The receiver pins every third-party action to a full commit SHA.
+
+### SDK repository dispatch token
+
+The four sender repositories reuse the existing `PRIVATE_DISPATCH_TOKEN`. It needs only enough
+permission on `yhmo/runner-agent` to call:
+
+```text
+POST /repos/yhmo/runner-agent/dispatches
+```
+
+Do not reuse the token for model access or for posting PR comments.
+
+### Skills prerequisite
+
+`yhmo/milvus-skills` must install:
+
+```text
+pr-review              SKILL.md + scripts/ + references/checklists/
+milvus-sdk-cpp         already present for the docs flow
+milvus-sdk-java        already present for the docs flow
+milvus-sdk-rust        already present for the docs flow
+milvus-sdk-csharp      already present for the docs flow
+```
+
+## Concurrency and failure behavior
+
+The receiver groups runs by the PR URL supplied by the trigger:
+
+```yaml
+concurrency:
+  group: pr-review-${{ pr_url }}
+  cancel-in-progress: true
+```
+
+A `synchronize` event for a PR whose review is still running cancels the in-flight run and starts a
+fresh review of the new head. A cancelled run may leave the inline comments it already posted in
+place; that is normal review-bot behavior and the fresh run reviews the updated diff.
+
+Important edge cases:
+
+1. **Malformed URL**: validation fails before opencode starts.
+2. **Head moved between sender and receiver**: supplied and GitHub API head commits must match.
+3. **Fork PRs**: supported, because `pull_request_target` runs the sender with secrets; the head
+   checkout is the canonical repository at the fork-provided head commit.
+4. **First-time contributor PR**: the sender waits for maintainer approval once.
+5. **Draft / bot / cherry-pick / release-preparation PR**: skipped successfully at validation with
+   the reason recorded on the step summary; no model cost.
+6. **Draft PR later marked ready**: the `ready_for_review` sender event dispatches it and the
+   receiver reviews the new head.
+7. **Large PRs**: the `pr-review` skill is exhaustive and time is not a stopping condition; the
+   workflow timeout must accommodate long reviews.
+8. **No findings**: the skill completes the review workflow and posts nothing.
+
+## Validation history
+
+Not yet validated end to end. Planned validation:
+
+1. Add `pr-review` to `yhmo/milvus-skills`.
+2. Configure `PR_REVIEW_PAT` in `yhmo/runner-agent`.
+3. Deploy the sender to one repository and merge to its default branch.
+4. Open a test PR and confirm the dispatch, review, and inline comments.
+
+## Remaining risks and hardening tasks
+
+| Risk | Current mitigation | Remaining task |
+|---|---|---|
+| Dispatch spam from public PR events | sender guarded by canonical-repository check | add author-membership or size gates in the sender if cost becomes an issue |
+| Prompt injection from PR content | review token limited to PR write; sender never executes PR code | audit posted comments; keep `PR_REVIEW_PAT` fine-grained and rotated |
+| `pull_request_target` misuse | sender never checks out or runs PR code | keep the sender minimal; add CI lint that fails if a checkout step is introduced |
+| In-flight reviews superseded | `cancel-in-progress: true` serializes by PR | document partial-comment behavior for maintainers |
+| First-time contributor friction | GitHub approval gate | document in sender README notes |
+| Model cost per large PR | exhaustive review is required by the skill | size caps or opt-in label if cost becomes a concern |
+
+## Rollout status and next steps
+
+Next:
+
+1. Add the `pr-review` skill to `yhmo/milvus-skills`.
+2. Configure the `PR_REVIEW_PAT` secret in `yhmo/runner-agent`.
+3. Deploy the sender workflow to `milvus-sdk-cpp`, `milvus-sdk-java`, `milvus-sdk-rust`, and
+   `milvus-sdk-csharp`.
+4. Validate end to end with a test PR.

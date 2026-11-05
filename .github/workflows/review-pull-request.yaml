@@ -1,0 +1,218 @@
+name: Review Pull Request
+
+run-name: review ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pr_url || github.event.client_payload.pr_url }}
+
+on:
+  repository_dispatch:
+    types:
+      - pr-review
+  workflow_dispatch:
+    inputs:
+      pr_url:
+        description: Pull request URL to review
+        required: true
+        type: string
+      head_sha:
+        description: Optional head commit SHA to pin the review to
+        required: false
+        type: string
+
+concurrency:
+  group: pr-review-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pr_url || github.event.client_payload.pr_url }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PR_URL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pr_url || github.event.client_payload.pr_url }}
+  HEAD_SHA: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.head_sha || github.event.client_payload.head_sha }}
+  RUN_REVIEW: 'true'
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Validate dispatch payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          test -n "$PR_URL" || { echo "missing pr_url in payload" >&2; exit 1; }
+
+          if [[ ! "$PR_URL" =~ ^https://github\.com/([^/]+)/([^/]+)/pull/([0-9]+)$ ]]; then
+            echo "malformed pr_url: $PR_URL" >&2
+            exit 1
+          fi
+
+          REPO="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+          REPO_NAME="${BASH_REMATCH[2]}"
+          PR_NUMBER="${BASH_REMATCH[3]}"
+          OWNER="${BASH_REMATCH[1]}"
+
+          case "$OWNER" in
+            milvus-io|zilliztech) ;;
+            *) echo "repository ${REPO} is not allowlisted for review" >&2; exit 1 ;;
+          esac
+
+          PR_META=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")
+          if [ -z "$PR_META" ]; then
+            echo "unable to resolve PR for ${REPO}#${PR_NUMBER}" >&2
+            exit 1
+          fi
+
+          readarray -t FIELDS < <(printf '%s\n' "$PR_META" | python3 -c '
+          import json, sys
+          pull = json.load(sys.stdin)
+          print(pull["head"]["sha"])
+          print("true" if pull.get("draft") else "false")
+          print(pull.get("title", ""))
+          print(pull.get("user", {}).get("login", ""))
+          print(pull.get("user", {}).get("type", ""))
+          ')
+          ACTUAL_HEAD=${FIELDS[0]}
+          DRAFT=${FIELDS[1]}
+          TITLE=${FIELDS[2]}
+          AUTHOR=${FIELDS[3]}
+          AUTHOR_TYPE=${FIELDS[4]}
+
+          if [ -z "$ACTUAL_HEAD" ]; then
+            echo "unable to resolve PR head for ${REPO}#${PR_NUMBER}" >&2
+            exit 1
+          fi
+
+          if [ -n "$HEAD_SHA" ] && [ "$HEAD_SHA" != "$ACTUAL_HEAD" ]; then
+            echo "PR head moved during dispatch: expected ${HEAD_SHA}, got ${ACTUAL_HEAD}" >&2
+            exit 1
+          fi
+          HEAD_SHA="$ACTUAL_HEAD"
+
+          skip_review() {
+            echo "Skipped review of ${REPO}#${PR_NUMBER} ${TITLE}: $1" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "RUN_REVIEW=false" >> "$GITHUB_ENV"
+            exit 0
+          }
+
+          if [ "$DRAFT" = "true" ]; then
+            skip_review "PR is in draft state"
+          fi
+
+          if [ "$AUTHOR_TYPE" = "Bot" ]; then
+            skip_review "author ${AUTHOR} is a bot"
+          fi
+
+          TITLE_LOWER=$(printf '%s' "$TITLE" | tr 'A-Z' 'a-z')
+          case "$TITLE_LOWER" in
+            '[cherry-pick]'*)
+              skip_review "cherry-pick PR"
+              ;;
+          esac
+          if [[ "$TITLE_LOWER" =~ ^prepare[[:space:]]+for[[:space:]]+v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            skip_review "release preparation PR"
+          fi
+
+          {
+            echo "REPO=$REPO"
+            echo "REPO_NAME=$REPO_NAME"
+            echo "PR_NUMBER=$PR_NUMBER"
+            echo "HEAD_SHA=$HEAD_SHA"
+          } >> "$GITHUB_ENV"
+
+          echo "Reviewing ${REPO}#${PR_NUMBER} at ${HEAD_SHA}." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout orchestrator configuration
+        if: env.RUN_REVIEW == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: env.RUN_REVIEW == 'true'
+        with:
+          node-version: 20
+
+      - name: Install opencode
+        if: env.RUN_REVIEW == 'true'
+        run: |
+          npm install -g opencode-ai@1.19.5
+          opencode --version
+
+      - name: Clone and install Milvus skills
+        if: env.RUN_REVIEW == 'true'
+        run: |
+          set -euo pipefail
+
+          git clone --depth 1 \
+            https://github.com/yhmo/milvus-skills.git \
+            "$GITHUB_WORKSPACE/milvus-skills"
+
+          cd "$GITHUB_WORKSPACE/milvus-skills"
+          ./install.sh
+
+      - name: Checkout PR head
+        if: env.RUN_REVIEW == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ env.REPO }}
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: ${{ env.REPO_NAME }}
+
+      - name: Inject opencode configuration
+        if: env.RUN_REVIEW == 'true'
+        env:
+          OPENCODE_BASE_URL: ${{ secrets.OPENCODE_BASE_URL }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_MODEL: ${{ secrets.OPENCODE_MODEL }}
+        run: |
+          set -euo pipefail
+
+          echo "::add-mask::$OPENCODE_BASE_URL"
+          echo "::add-mask::$OPENCODE_API_KEY"
+          echo "::add-mask::$OPENCODE_MODEL"
+
+          CFG=$(python3 - <<'EOF'
+          import json, os
+          with open('ci/opencode.base.json', encoding='utf-8') as f:
+              cfg = json.load(f)
+
+          provider = cfg['provider']['aistation']
+          provider['options']['baseURL'] = os.environ['OPENCODE_BASE_URL']
+          provider['options']['apiKey'] = os.environ['OPENCODE_API_KEY']
+
+          model = os.environ['OPENCODE_MODEL']
+          provider['models'] = {model: {'name': model}}
+          cfg['model'] = f'aistation/{model}'
+          print(json.dumps(cfg, ensure_ascii=False, separators=(',', ':')))
+          EOF
+          )
+
+          DELIMITER="__OPENCODE_CONFIG_$(python3 -c 'import secrets; print(secrets.token_hex(12))')__"
+          {
+            echo "OPENCODE_CONFIG_CONTENT<<${DELIMITER}"
+            printf '%s\n' "$CFG"
+            echo "${DELIMITER}"
+          } >> "$GITHUB_ENV"
+          echo "OPENCODE_FULL_MODEL=aistation/${OPENCODE_MODEL}" >> "$GITHUB_ENV"
+
+      - name: Run opencode PR review
+        if: env.RUN_REVIEW == 'true'
+        env:
+          OPENCODE: '1'
+          GH_TOKEN: ${{ secrets.PR_REVIEW_PAT }}
+          PR_REVIEW_CONCURRENCY: '2'
+        run: |
+          set -euo pipefail
+
+          echo "::add-mask::$GH_TOKEN"
+
+          opencode run \
+            --dir "$GITHUB_WORKSPACE/$REPO_NAME" \
+            --auto \
+            --model "$OPENCODE_FULL_MODEL" \
+            "pr-review the PR: ${PR_URL}"
