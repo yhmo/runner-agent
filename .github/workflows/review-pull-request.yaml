@@ -114,6 +114,13 @@ jobs:
             skip_review "release preparation PR"
           fi
 
+          REVIEWED_COUNT=$(gh api \
+            "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate \
+            | python3 -c 'import json, os, sys; d=json.load(sys.stdin); print(sum(1 for c in d if c.get("commit_id") == os.environ["HEAD_SHA"]))')
+          if [ "$REVIEWED_COUNT" -gt 0 ]; then
+            skip_review "head ${HEAD_SHA} already reviewed"
+          fi
+
           {
             echo "REPO=$REPO"
             echo "REPO_NAME=$REPO_NAME"
