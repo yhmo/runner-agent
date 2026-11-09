@@ -810,7 +810,9 @@ The receiver:
 2. Parses it with a strict pattern and derives the repository and PR number.
 3. Queries GitHub once for the PR metadata and extracts the current head commit, draft state, title,
    and author.
-4. Compares a supplied `head_sha` with that value and rejects a moved head.
+4. Compares a supplied `head_sha` with that value; when the PR head moved since the dispatch, it
+   adopts the current head and notes the change instead of failing, so the review always targets the
+   PR's latest state.
 5. Skips PRs that do not need review. A skip exits successfully and records the reason on the step
    summary, without installing tools, running opencode, or consuming model quota.
 6. Publishes `REPO`, `REPO_NAME`, `PR_NUMBER`, and `HEAD_SHA` to subsequent steps.
@@ -974,7 +976,8 @@ place; that is normal review-bot behavior and the fresh run reviews the updated 
 Important edge cases:
 
 1. **Malformed URL**: validation fails before opencode starts.
-2. **Head moved between sender and receiver**: supplied and GitHub API head commits must match.
+2. **Head moved between sender and receiver**: the receiver adopts the PR's current head and
+   records the change on the step summary instead of failing; the review targets the latest state.
 3. **Fork PRs**: supported, because `pull_request_target` runs the sender with secrets; the head
    checkout is the canonical repository at the fork-provided head commit.
 4. **First-time contributor PR**: the sender waits for maintainer approval once.

@@ -86,8 +86,8 @@ jobs:
           fi
 
           if [ -n "$HEAD_SHA" ] && [ "$HEAD_SHA" != "$ACTUAL_HEAD" ]; then
-            echo "PR head moved during dispatch: expected ${HEAD_SHA}, got ${ACTUAL_HEAD}" >&2
-            exit 1
+            echo "PR head moved since dispatch; reviewing latest ${ACTUAL_HEAD} (was ${HEAD_SHA})." \
+              | tee -a "$GITHUB_STEP_SUMMARY"
           fi
           HEAD_SHA="$ACTUAL_HEAD"
 
