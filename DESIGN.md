@@ -885,6 +885,11 @@ GH_TOKEN="$PR_REVIEW_PAT" opencode run \
 the exhaustive review with `gh api` only, validates each comment anchor against the current diff,
 and posts dedicated inline comments (`High` / `Medium` / `Low`) as the PAT owner.
 
+Before opencode starts, a dedicated `Validate PR review token` step fails the run when
+`PR_REVIEW_PAT` is invalid: it runs `gh auth status` (which exits non-zero for a rejected token)
+and reads the target PR with the token. An invalid token therefore fails the workflow loudly
+instead of letting opencode exit successfully without posting anything.
+
 The review step sets `PR_REVIEW_CONCURRENCY=2`, so the skill skips its provider rate-limit probe
 (the probe would read the model API key out of the opencode configuration into the model context)
 and uses a fixed subagent concurrency budget of 2. Tune this value if provider rate limits require

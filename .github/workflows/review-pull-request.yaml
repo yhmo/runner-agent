@@ -207,6 +207,21 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "OPENCODE_FULL_MODEL=aistation/${OPENCODE_MODEL}" >> "$GITHUB_ENV"
 
+      - name: Validate PR review token
+        if: env.RUN_REVIEW == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PR_REVIEW_PAT }}
+        run: |
+          set -euo pipefail
+
+          echo "::add-mask::$GH_TOKEN"
+
+          gh auth status >/dev/null 2>&1 \
+            || { echo "PR_REVIEW_PAT is invalid (gh auth status failed)" >&2; exit 1; }
+
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}" >/dev/null 2>&1 \
+            || { echo "PR_REVIEW_PAT cannot access ${REPO}#${PR_NUMBER}" >&2; exit 1; }
+
       - name: Run opencode PR review
         if: env.RUN_REVIEW == 'true'
         env:
