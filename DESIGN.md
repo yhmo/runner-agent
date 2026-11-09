@@ -901,6 +901,11 @@ a different budget.
 
 There is no publish or merge step. No commit, branch, or PR is created.
 
+After the review step, a `Record review summary` step queries the PR's inline comments authored by
+the reviewer on the reviewed head and writes a `## Review summary` block (reviewed target, posted
+comment count, `path:line` list) to the step summary, so the run page shows the outcome without
+opening the opencode log.
+
 ### 5. Manual trigger
 
 The workflow can also be started manually from GitHub to test without a sender:

@@ -243,3 +243,23 @@ jobs:
             --auto \
             --model "$OPENCODE_FULL_MODEL" \
             "pr-review the PR: ${PR_URL}"
+
+      - name: Record review summary
+        if: env.RUN_REVIEW == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PR_REVIEW_PAT }}
+          SUMMARY_FILE: ${{ runner.temp }}/review-summary.txt
+        run: |
+          set -euo pipefail
+
+          echo "::add-mask::$GH_TOKEN"
+          REVIEWER_LOGIN=$(GH_TOKEN="$GH_TOKEN" gh api user --jq .login)
+
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate \
+            | REVIEWER_LOGIN="$REVIEWER_LOGIN" python3 -c 'import json, os, sys; d=json.load(sys.stdin); items=[(c.get("path"), c.get("line")) for c in d if c.get("commit_id")==os.environ["HEAD_SHA"] and c.get("user",{}).get("login")==os.environ["REVIEWER_LOGIN"]]; open(os.environ["SUMMARY_FILE"],"w").write("Posted comments: %d\n%s" % (len(items), "\n".join("- %s:%s" % (p,l) for p,l in items)))'
+
+          {
+            echo "## Review summary"
+            echo "Reviewed ${REPO}#${PR_NUMBER} at ${HEAD_SHA}."
+            cat "$SUMMARY_FILE"
+          } >> "$GITHUB_STEP_SUMMARY"
