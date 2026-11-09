@@ -38,6 +38,7 @@ jobs:
       - name: Validate dispatch payload
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_REVIEW_TOKEN: ${{ secrets.PR_REVIEW_PAT }}
         run: |
           set -euo pipefail
 
@@ -114,11 +115,15 @@ jobs:
             skip_review "release preparation PR"
           fi
 
-          REVIEWED_COUNT=$(gh api \
+          REVIEWER_LOGIN=$(GH_TOKEN="$PR_REVIEW_TOKEN" gh api user --jq .login) \
+            || { echo "unable to resolve PR_REVIEW_PAT owner; token may be invalid" >&2; exit 1; }
+          echo "::add-mask::$REVIEWER_LOGIN"
+
+          REVIEWED_COUNT=$(GH_TOKEN="$PR_REVIEW_TOKEN" gh api \
             "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate \
-            | python3 -c 'import json, os, sys; d=json.load(sys.stdin); print(sum(1 for c in d if c.get("commit_id") == os.environ["HEAD_SHA"]))')
+            | REVIEWER_LOGIN="$REVIEWER_LOGIN" python3 -c 'import json, os, sys; d=json.load(sys.stdin); print(sum(1 for c in d if c.get("commit_id") == os.environ["HEAD_SHA"] and c.get("user",{}).get("login") == os.environ["REVIEWER_LOGIN"]))')
           if [ "$REVIEWED_COUNT" -gt 0 ]; then
-            skip_review "head ${HEAD_SHA} already reviewed"
+            skip_review "head ${HEAD_SHA} already reviewed by ${REVIEWER_LOGIN}"
           fi
 
           {

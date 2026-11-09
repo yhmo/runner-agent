@@ -830,7 +830,7 @@ The receiver skips (successful exit, no review) a PR when any of the following i
 | Bot-authored PR | `pull.user.type == "Bot"` — covers Dependabot, Renovate, Snyk, and other bots |
 | Cherry-pick PR | title starts with `[cherry-pick]` (case-insensitive) |
 | Release preparation PR | title matches `Prepare for vX.Y.Z` (case-insensitive), e.g. `Prepare for v3.0.4` |
-| Already-reviewed head | an inline review comment exists whose `commit_id` equals the PR head SHA |
+| Already-reviewed head | an inline review comment by the `PR_REVIEW_PAT` owner exists whose `commit_id` equals the PR head SHA |
 
 The filters are evaluated in the receiver, not in the sender, so they apply to manual
 `workflow_dispatch` runs as well and remain a single source of truth. Each skipped run writes its
@@ -839,8 +839,10 @@ reason to the step summary and sets `RUN_REVIEW=false`; every later step is gate
 
 The already-reviewed-head dedup uses `commit_id` because it is the exact content address of the PR
 head: the same SHA implies the same tree, so a re-dispatched run for a head that already produced
-review comments would only repeat them. New pushes change `head_sha` and are still reviewed; a
-squash or rebase also rewrites the SHA and is still reviewed. A head that produced zero comments
+review comments would only repeat them. The check counts only comments authored by the
+`PR_REVIEW_PAT` owner, so comments by GitHub Copilot or other humans on the same commit do not
+suppress a review. New pushes change `head_sha` and are still reviewed; a squash or rebase also
+rewrites the SHA and is still reviewed. A head that produced zero comments
 (clean PR) is not deduped by this check and would be re-reviewed if the identical head is
 dispatched again.
 
