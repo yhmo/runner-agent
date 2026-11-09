@@ -121,7 +121,7 @@ jobs:
 
           REVIEWED_COUNT=$(GH_TOKEN="$PR_REVIEW_TOKEN" gh api \
             "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate \
-            | REVIEWER_LOGIN="$REVIEWER_LOGIN" python3 -c 'import json, os, sys; d=json.load(sys.stdin); print(sum(1 for c in d if c.get("commit_id") == os.environ["HEAD_SHA"] and c.get("user",{}).get("login") == os.environ["REVIEWER_LOGIN"]))')
+            | REVIEWER_LOGIN="$REVIEWER_LOGIN" python3 -c 'import json, os, sys; d=json.load(sys.stdin); print(sum(1 for c in d if (c.get("original_commit_id") or c.get("commit_id")) == os.environ["HEAD_SHA"] and c.get("user",{}).get("login") == os.environ["REVIEWER_LOGIN"]))')
           if [ "$REVIEWED_COUNT" -gt 0 ]; then
             skip_review "head ${HEAD_SHA} already reviewed by ${REVIEWER_LOGIN}"
           fi
@@ -256,7 +256,7 @@ jobs:
           REVIEWER_LOGIN=$(GH_TOKEN="$GH_TOKEN" gh api user --jq .login)
 
           gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate \
-            | REVIEWER_LOGIN="$REVIEWER_LOGIN" python3 -c 'import json, os, sys; d=json.load(sys.stdin); items=[(c.get("path"), c.get("line")) for c in d if c.get("commit_id")==os.environ["HEAD_SHA"] and c.get("user",{}).get("login")==os.environ["REVIEWER_LOGIN"]]; open(os.environ["SUMMARY_FILE"],"w").write("Posted comments: %d\n%s" % (len(items), "\n".join("- %s:%s" % (p,l) for p,l in items)))'
+            | REVIEWER_LOGIN="$REVIEWER_LOGIN" python3 -c 'import json, os, sys; d=json.load(sys.stdin); items=[(c.get("path"), c.get("line")) for c in d if (c.get("original_commit_id") or c.get("commit_id"))==os.environ["HEAD_SHA"] and c.get("user",{}).get("login")==os.environ["REVIEWER_LOGIN"]]; open(os.environ["SUMMARY_FILE"],"w").write("Posted comments: %d\n%s" % (len(items), "\n".join("- %s:%s" % (p,l) for p,l in items)))'
 
           {
             echo "## Review summary"

@@ -839,12 +839,16 @@ The filters are evaluated in the receiver, not in the sender, so they apply to m
 reason to the step summary and sets `RUN_REVIEW=false`; every later step is gated on
 `RUN_REVIEW == 'true'`.
 
-The already-reviewed-head dedup uses `commit_id` because it is the exact content address of the PR
-head: the same SHA implies the same tree, so a re-dispatched run for a head that already produced
-review comments would only repeat them. The check counts only comments authored by the
-`PR_REVIEW_PAT` owner, so comments by GitHub Copilot or other humans on the same commit do not
-suppress a review. New pushes change `head_sha` and are still reviewed; a squash or rebase also
-rewrites the SHA and is still reviewed. A head that produced zero comments
+The already-reviewed-head dedup matches on `original_commit_id` (falling back to `commit_id`),
+because it is the exact content address of the PR head: the same SHA implies the same tree, so a
+re-dispatched run for a head that already produced review comments would only repeat them. The
+check deliberately ignores `commit_id` alone: GitHub re-anchors a review comment's `commit_id` to a
+newer PR head when the commented line still exists in the new diff, so matching only on `commit_id`
+would wrongly treat a force-pushed head as already reviewed. `original_commit_id` records the
+commit the comment was originally created on and is never rewritten. The check counts only comments
+authored by the `PR_REVIEW_PAT` owner, so comments by GitHub Copilot or other humans on the same
+commit do not suppress a review. New pushes change `head_sha` and are still reviewed; a squash or
+rebase also rewrites the SHA and is still reviewed. A head that produced zero comments
 (clean PR) is not deduped by this check and would be re-reviewed if the identical head is
 dispatched again.
 
