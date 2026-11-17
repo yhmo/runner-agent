@@ -207,7 +207,7 @@ The runner installs the required language toolchain conditionally:
 | SDK | Additional setup |
 |---|---|
 | Java | Temurin 8 |
-| Rust | stable Rust |
+| Rust | stable Rust via a plain `rustup toolchain install` run step (no third-party action) |
 | PyMilvus | Python 3.11 |
 | Go | stable Go |
 | C# | .NET 8.x |
@@ -468,17 +468,17 @@ Current Actions permissions:
 Actions enabled
 Allowed actions: selected
 GitHub-created actions: allowed
-Specified action: dtolnay/rust-toolchain@<full SHA>
 Verified creators: not allowed
 Default workflow token: read-only
 ```
 
-The selected-action pattern must be the full commit SHA. Using only
-`dtolnay/rust-toolchain` caused startup failures; the working value is:
-
-```text
-dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
-```
+There is no third-party action in the allowlist: the Rust toolchain is installed with a plain
+`run` step (`rustup toolchain install stable --profile minimal`), and all remaining actions
+(`actions/checkout`, `actions/setup-node`, `actions/setup-java`, `actions/setup-python`,
+`actions/setup-go`, `actions/setup-dotnet`) are GitHub-created and covered by
+`GitHub-created actions: allowed`. Keeping the allowlist empty of third-party entries avoids the
+class of startup failure where a workflow's pinned third-party action SHA and the repository's
+allowed-actions pattern drift out of sync.
 
 ### `WEB_CONTENT_PERSONAL_PAT`
 

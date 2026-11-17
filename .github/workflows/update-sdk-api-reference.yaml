@@ -261,8 +261,11 @@ jobs:
           cd "$GITHUB_WORKSPACE/milvus-skills"
           ./install.sh
 
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Install Rust toolchain
         if: env.RUN_UPDATE == 'true' && env.SDK == 'rust'
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
 
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         if: env.RUN_UPDATE == 'true' && env.SDK == 'java'

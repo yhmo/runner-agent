@@ -34,9 +34,12 @@ Configure these Actions variables:
 Configure Actions permissions under **Settings → Actions → General**:
 
 - Allow GitHub-created actions
-- Allow the specified action
-  `dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec`
 - Keep the default workflow token permission read-only
+
+All actions used by the workflows are GitHub-created (`actions/checkout`, `actions/setup-node`,
+`actions/setup-java`, `actions/setup-python`, `actions/setup-go`, `actions/setup-dotnet`). The Rust
+toolchain for Rust runs is installed with a plain `rustup toolchain install` step, so no third-party
+action needs to be allowlisted.
 
 `WEB_CONTENT_PERSONAL_PAT` must belong to the personal GitHub account and have access to `milvus-io/web-content`. A fine-grained PAT should grant:
 
