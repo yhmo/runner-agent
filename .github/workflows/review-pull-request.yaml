@@ -250,13 +250,18 @@ jobs:
           GH_TOKEN: ${{ secrets.PR_REVIEW_PAT }}
           SUMMARY_FILE: ${{ runner.temp }}/review-summary.txt
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           echo "::add-mask::$GH_TOKEN"
-          REVIEWER_LOGIN=$(GH_TOKEN="$GH_TOKEN" gh api user --jq .login)
 
-          gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate \
-            | REVIEWER_LOGIN="$REVIEWER_LOGIN" python3 -c 'import json, os, sys; d=json.load(sys.stdin); items=[(c.get("path"), c.get("line")) for c in d if (c.get("original_commit_id") or c.get("commit_id"))==os.environ["HEAD_SHA"] and c.get("user",{}).get("login")==os.environ["REVIEWER_LOGIN"]]; open(os.environ["SUMMARY_FILE"],"w").write("Posted comments: %d\n%s" % (len(items), "\n".join("- %s:%s" % (p,l) for p,l in items)))'
+          if ! (
+            set -euo pipefail
+            REVIEWER_LOGIN=$(GH_TOKEN="$GH_TOKEN" gh api user --jq .login)
+            gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate \
+              | REVIEWER_LOGIN="$REVIEWER_LOGIN" python3 -c 'import json, os, sys; d=json.load(sys.stdin); items=[(c.get("path"), c.get("line")) for c in d if (c.get("original_commit_id") or c.get("commit_id"))==os.environ["HEAD_SHA"] and c.get("user",{}).get("login")==os.environ["REVIEWER_LOGIN"]]; open(os.environ["SUMMARY_FILE"],"w").write("Posted comments: %d\n%s" % (len(items), "\n".join("- %s:%s" % (p,l) for p,l in items)))'
+          ); then
+            echo "Summary unavailable: GitHub API query failed (possibly rate limited)." > "$SUMMARY_FILE"
+          fi
 
           {
             echo "## Review summary"
