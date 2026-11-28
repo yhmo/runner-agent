@@ -663,7 +663,7 @@ Next:
 
 # PR review → private runner-agent → PR review comments
 
-> Design and implementation status: 2026-11-05.
+> Design and implementation status: 2026-11-28.
 >
 > The implementation source of truth is:
 >
@@ -681,9 +681,12 @@ When a supported SDK repository receives a pull request, the repository sends a 
 yhmo/runner-agent
 ```
 
-The private repository starts a GitHub Actions runner, installs the Milvus skills and the
-`pr-review` skill, checks out the exact PR head commit, runs opencode to review the PR, and posts
-inline review comments on the PR as the maintainer's personal GitHub account.
+The private repository starts a GitHub Actions runner, installs the Milvus skills (including the
+`pr-review` and `react-review` skills), checks out the exact PR head commit, and runs two opencode
+passes against it: `react-review` first closes the loop on existing review threads (acknowledges
+verified fixes, agrees with sound author positions, rebuts unreasonable ones, and resolves threads),
+then `pr-review` reviews the PR and posts inline review comments as the maintainer's personal GitHub
+account.
 
 The receiver does not keep a watch list of repositories. It trusts the notification; the dispatch
 payload carries the PR URL and the pinned head commit. Currently planned senders are:
@@ -696,7 +699,8 @@ milvus-sdk-csharp
 ```
 
 Unlike the SDK docs flow, there is no publication step. The review output is the only write
-performed, and it consists exclusively of GitHub PR comments posted by the `pr-review` skill.
+performed, and it consists exclusively of GitHub PR comments posted by the `pr-review` skill and
+review-thread resolutions and replies made by the `react-review` skill.
 
 ## Responsibility and trust boundaries
 
@@ -824,7 +828,9 @@ either organization without maintaining a per-repo list.
 
 ### PR skip filters
 
-The receiver skips (successful exit, no review) a PR when any of the following is true:
+The receiver skips a PR when any of the following is true. Draft, bot, cherry-pick, and
+release-preparation PRs skip the whole run; an already-reviewed head only suppresses the
+`pr-review` pass (details below).
 
 | Condition | How it is detected |
 |---|---|
@@ -832,12 +838,14 @@ The receiver skips (successful exit, no review) a PR when any of the following i
 | Bot-authored PR | `pull.user.type == "Bot"` — covers Dependabot, Renovate, Snyk, and other bots |
 | Cherry-pick PR | title starts with `[cherry-pick]` (case-insensitive) |
 | Release preparation PR | title matches `Prepare for vX.Y.Z` (case-insensitive), e.g. `Prepare for v3.0.4` |
-| Already-reviewed head | an inline review comment by the `PR_REVIEW_PAT` owner exists whose `commit_id` equals the PR head SHA |
+| Already-reviewed head | an inline review comment by the `PR_REVIEW_PAT` owner exists whose `commit_id` equals the PR head SHA; this filter skips only the `pr-review` pass, not `react-review` |
 
 The filters are evaluated in the receiver, not in the sender, so they apply to manual
-`workflow_dispatch` runs as well and remain a single source of truth. Each skipped run writes its
-reason to the step summary and sets `RUN_REVIEW=false`; every later step is gated on
-`RUN_REVIEW == 'true'`.
+`workflow_dispatch` runs as well and remain a single source of truth. The hard filters (draft, bot,
+cherry-pick, release preparation) write their reason to the step summary, set `RUN_REVIEW=false`,
+and terminate the run before any model cost. The already-reviewed-head filter instead writes its
+reason to the step summary and sets only `RUN_PR_REVIEW=false`, so the `react-review` pass still
+runs to close the loop on existing threads while the fresh `pr-review` pass is suppressed.
 
 The already-reviewed-head dedup matches on `original_commit_id` (falling back to `commit_id`),
 because it is the exact content address of the PR head: the same SHA implies the same tree, so a
@@ -856,8 +864,8 @@ dispatched again.
 
 The runner installs Node.js, installs a pinned `opencode-ai` version, clones the latest
 `yhmo/milvus-skills` over public HTTPS, and executes `./install.sh`, which symlinks the skills into
-opencode's skill directory. The `pr-review` skill and the repository skills for the SDK senders
-must be present in `milvus-skills`.
+opencode's skill directory. The `pr-review` and `react-review` skills and the repository skills for
+the SDK senders must be present in `milvus-skills`.
 
 ### 3. Check out the exact PR head
 
@@ -878,7 +886,37 @@ head.
 ### 4. Inject opencode configuration and run the review
 
 The receiver combines `ci/opencode.base.json` with `OPENCODE_*` secrets in the same masked
-configuration-value pattern used by the SDK docs flow, then runs:
+configuration-value pattern used by the SDK docs flow. Two opencode passes run sequentially inside
+the PR head checkout.
+
+#### 4.1 react-review: close the loop on existing threads
+
+Before posting a fresh review, the receiver runs the `react-review` skill against the same PR:
+
+```bash
+GH_TOKEN="$PR_REVIEW_PAT" opencode run \
+  --dir "$GITHUB_WORKSPACE/$REPO_NAME" \
+  --auto \
+  --model "$OPENCODE_FULL_MODEL" \
+  "react-review the PR: ${PR_URL}"
+```
+
+A cheap `Check for react-review threads` step first counts review threads rooted by the
+`PR_REVIEW_PAT` owner or an automated review bot (Copilot /
+`copilot-pull-request-reviewer` / `chatgpt-codex-connector`). When there are none, it sets
+`RUN_REACT_REVIEW=false` and the react-review pass is skipped, avoiding a wasted model run on PRs
+with no review history. `react-review` itself skips PRs whose in-scope threads are all resolved.
+
+`react-review` evaluates every open in-scope thread against the current head: it verifies claimed
+fixes in the code rather than trusting prose, agrees with and resolves sound author positions,
+posts evidence-backed rebuttals to unreasonable positions, and inspects unanswered threads against
+the current head. It only mutates threads rooted by the `PR_REVIEW_PAT` owner or an automated
+review bot, and every mutation goes through `resolve_thread.py`, which revalidates thread state
+immediately before posting or resolving.
+
+#### 4.2 pr-review: post the fresh review
+
+After react-review has closed the loop, the receiver runs the exhaustive review:
 
 ```bash
 GH_TOKEN="$PR_REVIEW_PAT" opencode run \
@@ -888,27 +926,32 @@ GH_TOKEN="$PR_REVIEW_PAT" opencode run \
   "pr-review the PR: ${PR_URL}"
 ```
 
-`GH_TOKEN` is set only for this step to the personal PR review PAT and masked with
-`::add-mask::`. The `pr-review` skill performs
-the exhaustive review with `gh api` only, validates each comment anchor against the current diff,
-and posts dedicated inline comments (`High` / `Medium` / `Low`) as the PAT owner.
+The pr-review pass is gated on `RUN_PR_REVIEW == 'true'` in addition to `RUN_REVIEW`. The
+already-reviewed-head dedup sets `RUN_PR_REVIEW=false` instead of skipping the whole run, so an
+author reply that did not change the head still gets the react-review pass but is not re-reviewed.
+
+`GH_TOKEN` is set only for these steps to the personal PR review PAT and masked with
+`::add-mask::`. The `pr-review` skill performs the exhaustive review with `gh api` only, validates
+each comment anchor against the current diff, and posts dedicated inline comments
+(`High` / `Medium` / `Low`) as the PAT owner.
 
 Before opencode starts, a dedicated `Validate PR review token` step fails the run when
 `PR_REVIEW_PAT` is invalid: it runs `gh auth status` (which exits non-zero for a rejected token)
 and reads the target PR with the token. An invalid token therefore fails the workflow loudly
 instead of letting opencode exit successfully without posting anything.
 
-The review step sets `PR_REVIEW_CONCURRENCY=2`, so the skill skips its provider rate-limit probe
-(the probe would read the model API key out of the opencode configuration into the model context)
-and uses a fixed subagent concurrency budget of 2. Tune this value if provider rate limits require
-a different budget.
+Both review passes set `PR_REVIEW_CONCURRENCY=2`, so the skills skip their provider rate-limit
+probe (the probe would read the model API key out of the opencode configuration into the model
+context) and use a fixed subagent concurrency budget of 2. Tune this value if provider rate limits
+require a different budget.
 
 There is no publish or merge step. No commit, branch, or PR is created.
 
-After the review step, a `Record review summary` step queries the PR's inline comments authored by
-the reviewer on the reviewed head and writes a `## Review summary` block (reviewed target, posted
-comment count, `path:line` list) to the step summary, so the run page shows the outcome without
-opening the opencode log.
+After the `pr-review` pass, a `Record review summary` step queries the PR's inline comments authored
+by the reviewer on the reviewed head and writes a `## Review summary` block (reviewed target,
+posted comment count, `path:line` list) to the step summary, so the run page shows the outcome
+without opening the opencode log. It is gated on `RUN_PR_REVIEW` and is skipped for
+react-review-only runs, whose outcome is reported by the react-review pass itself.
 
 ### 5. Manual trigger
 
@@ -962,6 +1005,7 @@ Do not reuse the token for model access or for posting PR comments.
 
 ```text
 pr-review              SKILL.md + scripts/ + references/checklists/
+react-review           SKILL.md + scripts/
 milvus-sdk-cpp         already present for the docs flow
 milvus-sdk-java        already present for the docs flow
 milvus-sdk-rust        already present for the docs flow
@@ -994,18 +1038,24 @@ Important edge cases:
    the reason recorded on the step summary; no model cost.
 6. **Draft PR later marked ready**: the `ready_for_review` sender event dispatches it and the
    receiver reviews the new head.
-7. **Large PRs**: the `pr-review` skill is exhaustive and time is not a stopping condition; the
-   workflow timeout must accommodate long reviews.
-8. **No findings**: the skill completes the review workflow and posts nothing.
+7. **No react-review threads**: the thread pre-check sets `RUN_REACT_REVIEW=false` and the
+   react-review pass is skipped; the run proceeds straight to `pr-review`.
+8. **Already-reviewed head**: react-review still runs to close the loop; the `pr-review` pass is
+   skipped via `RUN_PR_REVIEW=false`.
+9. **Large PRs**: the review skills are exhaustive and time is not a stopping condition; the
+   workflow timeout must accommodate two sequential model passes.
+10. **No findings**: `pr-review` completes the review workflow and posts nothing; react-review-only
+    runs post nothing when every thread is already handled.
 
 ## Validation history
 
 Not yet validated end to end. Planned validation:
 
-1. Add `pr-review` to `yhmo/milvus-skills`.
+1. Add `pr-review` and `react-review` to `yhmo/milvus-skills`.
 2. Configure `PR_REVIEW_PAT` in `yhmo/runner-agent`.
 3. Deploy the sender to one repository and merge to its default branch.
-4. Open a test PR and confirm the dispatch, review, and inline comments.
+4. Open a test PR and confirm the dispatch, react-review pass, review, and inline comments.
+5. Push a new head and confirm react-review closes fixed threads before pr-review re-reviews.
 
 ## Remaining risks and hardening tasks
 
@@ -1016,14 +1066,16 @@ Not yet validated end to end. Planned validation:
 | `pull_request_target` misuse | sender never checks out or runs PR code | keep the sender minimal; add CI lint that fails if a checkout step is introduced |
 | In-flight reviews superseded | `cancel-in-progress: true` serializes by PR | document partial-comment behavior for maintainers |
 | First-time contributor friction | GitHub approval gate | document in sender README notes |
+| Model cost of two passes per dispatch | thread pre-check skips react-review when there are no threads; already-reviewed heads skip pr-review | size caps or opt-in label if cost becomes a concern |
 | Model cost per large PR | exhaustive review is required by the skill | size caps or opt-in label if cost becomes a concern |
 
 ## Rollout status and next steps
 
 Next:
 
-1. Add the `pr-review` skill to `yhmo/milvus-skills`.
+1. Add the `pr-review` and `react-review` skills to `yhmo/milvus-skills`.
 2. Configure the `PR_REVIEW_PAT` secret in `yhmo/runner-agent`.
 3. Deploy the sender workflow to `milvus-sdk-cpp`, `milvus-sdk-java`, `milvus-sdk-rust`, and
    `milvus-sdk-csharp`.
-4. Validate end to end with a test PR.
+4. Validate end to end with a test PR, including a pushed head that react-review should close
+   before pr-review re-reviews it.

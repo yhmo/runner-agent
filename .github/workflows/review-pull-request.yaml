@@ -28,11 +28,13 @@ env:
   PR_URL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pr_url || github.event.client_payload.pr_url }}
   HEAD_SHA: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.head_sha || github.event.client_payload.head_sha }}
   RUN_REVIEW: 'true'
+  RUN_PR_REVIEW: 'true'
+  RUN_REACT_REVIEW: 'true'
 
 jobs:
   review:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
 
     steps:
       - name: Validate dispatch payload
@@ -123,7 +125,9 @@ jobs:
             "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate \
             | REVIEWER_LOGIN="$REVIEWER_LOGIN" python3 -c 'import json, os, sys; d=json.load(sys.stdin); print(sum(1 for c in d if (c.get("original_commit_id") or c.get("commit_id")) == os.environ["HEAD_SHA"] and c.get("user",{}).get("login") == os.environ["REVIEWER_LOGIN"]))')
           if [ "$REVIEWED_COUNT" -gt 0 ]; then
-            skip_review "head ${HEAD_SHA} already reviewed by ${REVIEWER_LOGIN}"
+            echo "Skipped pr-review of ${REPO}#${PR_NUMBER} ${TITLE}: head ${HEAD_SHA} already reviewed by ${REVIEWER_LOGIN}." \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "RUN_PR_REVIEW=false" >> "$GITHUB_ENV"
           fi
 
           {
@@ -227,8 +231,56 @@ jobs:
           gh api "repos/${REPO}/pulls/${PR_NUMBER}" >/dev/null 2>&1 \
             || { echo "PR_REVIEW_PAT cannot access ${REPO}#${PR_NUMBER}" >&2; exit 1; }
 
-      - name: Run opencode PR review
+      - name: Check for react-review threads
         if: env.RUN_REVIEW == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PR_REVIEW_PAT }}
+        run: |
+          set -euo pipefail
+
+          echo "::add-mask::$GH_TOKEN"
+
+          REVIEWER_LOGIN=$(gh api user --jq .login)
+          THREAD_COUNT=$(gh api \
+            "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate \
+            | REVIEWER_LOGIN="$REVIEWER_LOGIN" python3 -c '
+            import json, os, sys
+            d = json.load(sys.stdin)
+            bots = {"Copilot", "copilot-pull-request-reviewer", "chatgpt-codex-connector"}
+            targets = {os.environ["REVIEWER_LOGIN"]} | bots
+            print(sum(
+                1 for c in d
+                if c.get("user", {}).get("login") in targets
+                and not c.get("in_reply_to_id")
+            ))
+            ')
+
+          if [ "$THREAD_COUNT" -eq 0 ]; then
+            echo "No react-review threads to process." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "RUN_REACT_REVIEW=false" >> "$GITHUB_ENV"
+          else
+            echo "Found ${THREAD_COUNT} react-review thread(s) to process." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Run opencode react-review
+        if: env.RUN_REVIEW == 'true' && env.RUN_REACT_REVIEW == 'true'
+        env:
+          OPENCODE: '1'
+          GH_TOKEN: ${{ secrets.PR_REVIEW_PAT }}
+          PR_REVIEW_CONCURRENCY: '2'
+        run: |
+          set -euo pipefail
+
+          echo "::add-mask::$GH_TOKEN"
+
+          opencode run \
+            --dir "$GITHUB_WORKSPACE/$REPO_NAME" \
+            --auto \
+            --model "$OPENCODE_FULL_MODEL" \
+            "react-review the PR: ${PR_URL}"
+
+      - name: Run opencode PR review
+        if: env.RUN_REVIEW == 'true' && env.RUN_PR_REVIEW == 'true'
         env:
           OPENCODE: '1'
           GH_TOKEN: ${{ secrets.PR_REVIEW_PAT }}
@@ -245,7 +297,7 @@ jobs:
             "pr-review the PR: ${PR_URL}"
 
       - name: Record review summary
-        if: env.RUN_REVIEW == 'true'
+        if: env.RUN_REVIEW == 'true' && env.RUN_PR_REVIEW == 'true'
         env:
           GH_TOKEN: ${{ secrets.PR_REVIEW_PAT }}
           SUMMARY_FILE: ${{ runner.temp }}/review-summary.txt
